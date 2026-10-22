@@ -62,3 +62,9 @@ uv run uvicorn casepilot.simulator.app:app --host 127.0.0.1 --port 8001
 Follow-up task writes are **idempotent on `proposal_id`**: identical retry returns the original (`created=false`); same `proposal_id` with a different case or payload → **409 Conflict**.
 
 Auth header: `Authorization: Bearer <SIMULATOR_SERVICE_TOKEN>`.
+
+## Cost ledger (live only)
+
+- **Envelope:** $5 USD total, GLM-only (`z-ai/glm-5.3-flash`) — enforced via `casepilot.evaluation.cost.CostLedger`; the backend is the sole ledger mutator.
+- **Unit prices** come only from verified config: `evals/pricing/verified_prices.json` (override via `CASEPILOT_VERIFIED_PRICES_PATH`); see `verified_prices.example.json` for the schema. No guessed ceilings in code.
+- Default ledger file: `evals/reports/cost_ledger.json` (gitignored). Missing usage on settle fails closed (full reserve charged + pricing marked unreliable); operator-only stale-reservation recovery settles at full reserve (`--recover-stale-reservations`).

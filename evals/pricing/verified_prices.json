@@ -1,0 +1,29 @@
+{
+  "version": "1",
+  "notes": [
+    "These rates are ENFORCED OpenRouter routing caps (provider.max_price), NOT alleged exact billed unit prices.",
+    "OpenRouter endpoints explorer for exact model id z-ai/glm-5.3-flash listed max live input 0.225 USD/M and output 2.0 USD/M.",
+    "Enforced caps used here: prompt 0.23 USD/M and completion 2.0 USD/M (input slightly above list max for routing headroom; output matches list max).",
+    "Backend should send provider.max_price {prompt: 0.23, completion: 2} and require_parameters true on each live call.",
+    "Reservation math uses these cap rates × backend token ceilings."
+  ],
+  "models": {
+    "z-ai/glm-5.3-flash": {
+      "input_usd_per_mtok": 0.23,
+      "output_usd_per_mtok": 2.0,
+      "list_input_usd_per_mtok": 0.225,
+      "list_output_usd_per_mtok": 2.0,
+      "max_price": {
+        "prompt": 0.23,
+        "completion": 2.0
+      },
+      "require_parameters": true,
+      "kind": "enforced_routing_cap",
+      "source": "https://openrouter.ai/api/v1/models/z-ai/glm-5.3-flash/endpoints",
+      "source_page": "https://openrouter.ai/z-ai/glm-5.3-flash",
+      "verified_at": "2026-10-22",
+      "verified": true,
+      "notes": "Caps aligned to explorer list maxima with prompt 0.23 >= 0.225; not a guarantee of provider invoice line items."
+    }
+  }
+}

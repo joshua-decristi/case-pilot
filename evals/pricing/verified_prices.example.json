@@ -1,0 +1,23 @@
+{
+  "version": "1",
+  "notes": [
+    "Copy/edit verified_prices.json only when confirming OpenRouter endpoints rates.",
+    "Use kind=enforced_routing_cap with max_price for provider routing — not claimed exact invoice rates."
+  ],
+  "models": {
+    "z-ai/glm-5.3-flash": {
+      "input_usd_per_mtok": 0.23,
+      "output_usd_per_mtok": 2.0,
+      "list_input_usd_per_mtok": 0.225,
+      "list_output_usd_per_mtok": 2.0,
+      "max_price": {"prompt": 0.23, "completion": 2.0},
+      "require_parameters": true,
+      "kind": "enforced_routing_cap",
+      "source": "https://openrouter.ai/api/v1/models/z-ai/glm-5.3-flash/endpoints",
+      "source_page": "https://openrouter.ai/z-ai/glm-5.3-flash",
+      "verified_at": "YYYY-MM-DD",
+      "verified": false,
+      "notes": "Set verified=true only after confirming endpoints explorer rates."
+    }
+  }
+}
