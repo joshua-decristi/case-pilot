@@ -22,7 +22,7 @@
     "CASE-001 smoke headline is attempt 3 (completed); attempts 1\u20132 retained as history only."
   ],
   "offline_quality_gates": {
-    "note": "Documented from local quality run; CI runs the same unpaid gates.",
+    "note": "Historical local offline quality run; unpaid gates run locally only (no hosted CI).",
     "pytest_collected": 117,
     "gates": [
       "ruff check",
