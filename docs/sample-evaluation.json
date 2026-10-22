@@ -1,0 +1,626 @@
+{
+  "sanitized": true,
+  "source_artifacts": [
+    "evals/reports/eval_latest.json",
+    "evals/reports/live-smoke.json",
+    "evals/reports/cost_ledger.json"
+  ],
+  "sanitization_notes": [
+    "Absolute local filesystem paths removed from portable fields (nonportable sources listed only under live-smoke for reconciliation).",
+    "No API keys, service/operator tokens, or authorization headers.",
+    "No private model reasoning / chain-of-thought; no full narrative explanations or raw tool payloads.",
+    "Evidence entries keep record_id/field/retrieval_ref only (facts omitted).",
+    "Spend figures are ledger snapshots, not promised unit costs."
+  ],
+  "caveats": [
+    "Held-out evaluation split N=8 only; not production accuracy.",
+    "Evidence grades are ID+retrieval_ref checks only \u2014 not semantic entailment proof.",
+    "Rule-based grader against authored labels; labels not used to change prompts for this run (no_prompt_tuning).",
+    "Live model behavior is non-deterministic; repeat runs may vary.",
+    "Application $5 GLM-only ledger is not a provider hard cap.",
+    "Synthetic fixtures only; independent portfolio demo, not any insurer system.",
+    "CASE-001 smoke headline is attempt 3 (completed); attempts 1\u20132 retained as history only."
+  ],
+  "offline_quality_gates": {
+    "note": "Documented from local quality run; CI runs the same unpaid gates.",
+    "pytest_collected": 117,
+    "gates": [
+      "ruff check",
+      "ruff format --check",
+      "mypy",
+      "pytest"
+    ],
+    "paid_model_calls": false
+  },
+  "live_smoke": {
+    "artifact": "live-smoke",
+    "mode": "gate1_single_live_investigation",
+    "gate_result": "passed",
+    "case_id": "CASE-001",
+    "run_id": "82e71af3-2bfa-4145-9b51-8afa58644fc4",
+    "timestamp": "2026-10-22T18:16:54+00:00",
+    "attempt": 3,
+    "failure": null,
+    "services": {
+      "backend": "http://127.0.0.1:8000/health 200",
+      "simulator": "http://127.0.0.1:8001/health 200 (temp seeded DB)",
+      "test_mode": false,
+      "cost_ledger": "evals/reports/cost_ledger.json (global, not reset)"
+    },
+    "outcome": {
+      "status": "completed",
+      "diagnosis": "missing_document",
+      "diagnosis_summary": "Case stalled because required document proof_of_income was never received.",
+      "next_action": "request_missing_document",
+      "approval_required": false,
+      "proposal_id": null,
+      "evidence_count": 5,
+      "evidence": [
+        {
+          "source_system": "case_system",
+          "record_id": "CASE-001",
+          "field": "status",
+          "retrieval_ref": "get_case"
+        },
+        {
+          "source_system": "case_system",
+          "record_id": "CASE-001",
+          "field": "required_documents",
+          "retrieval_ref": "get_case"
+        },
+        {
+          "source_system": "event_system",
+          "record_id": "EVT-001-A",
+          "field": "details.missing",
+          "retrieval_ref": "get_events"
+        },
+        {
+          "source_system": "event_system",
+          "record_id": "EVT-001-B",
+          "field": "details.reason",
+          "retrieval_ref": "get_events"
+        },
+        {
+          "source_system": "document_system",
+          "record_id": "DOC-001-A",
+          "field": "doc_type",
+          "retrieval_ref": "get_documents"
+        }
+      ],
+      "tools_selected": [
+        "get_case(CASE-001)",
+        "get_documents(DOC-001-A, DOC-001-B)",
+        "get_events(EVT-001-A, EVT-001-B)"
+      ],
+      "structured_response": "schema-valid InvestigationResult; completed with 5 grounded evidence rows",
+      "model_calls": 2,
+      "models": [
+        "z-ai/glm-5.3-flash (real provider via guarded middleware)"
+      ]
+    },
+    "cost_guard_behavior": {
+      "reservation_made": true,
+      "reserved_usd": 0.12032,
+      "settled_usd": 0.00169768,
+      "guard_route": "guarded middleware only; no direct unguarded model calls",
+      "ledger_spent_usd_after_this_run": 0.003367
+    },
+    "attempt_history": [
+      {
+        "attempt": 1,
+        "run_id": "30939d65-79f1-45e9-83f5-ed1fa2fbcc8c",
+        "timestamp": "2026-10-22T18:05+00:00",
+        "status": "failed",
+        "diagnosis": "indeterminate",
+        "next_action": "escalate_to_human",
+        "evidence_count": 0,
+        "cost": {
+          "kind": "release",
+          "amount_usd": 0.12032,
+          "note": "pre-call reserve released; no settle"
+        },
+        "failure": "sync-only wrap_model_call / missing awrap_model_call in async agent path (fixed before later attempts; covered by offline async guard tests)"
+      },
+      {
+        "attempt": 2,
+        "run_id": "edde07c8-654a-4cc0-bc2e-03584227615b",
+        "timestamp": "2026-10-22T18:08+00:00",
+        "status": "indeterminate",
+        "diagnosis": "missing_document",
+        "next_action": "escalate_to_human",
+        "evidence_count": 1,
+        "cost": {
+          "kind": "settle",
+          "amount_usd": 0.00166932
+        },
+        "failure": "evidence validation rejected unsupported refs; completed without executable proposal (escalate_to_human)",
+        "note": "Previously promoted as live-smoke headline; superseded by attempt 3"
+      },
+      {
+        "attempt": 3,
+        "run_id": "82e71af3-2bfa-4145-9b51-8afa58644fc4",
+        "timestamp": "2026-10-22T18:16:54+00:00",
+        "status": "completed",
+        "diagnosis": "missing_document",
+        "next_action": "request_missing_document",
+        "evidence_count": 5,
+        "cost": {
+          "kind": "settle",
+          "amount_usd": 0.00169768
+        },
+        "failure": null,
+        "note": "Latest verified known-good CASE-001 live smoke (this artifact headline)"
+      }
+    ]
+  },
+  "live_evaluation_split": {
+    "live": true,
+    "metadata": {
+      "timestamp": "2026-10-22T18:17:33.612719+00:00",
+      "git_revision": "unavailable",
+      "python_version": "3.14.7",
+      "casepilot_version": "0.1.0",
+      "package_versions": {
+        "langchain": "1.4.7",
+        "httpx": "0.28.1",
+        "fastapi": "0.160.0",
+        "pydantic": "2.12.5"
+      },
+      "fixture_path": "fixtures/enterprise/cases.json",
+      "fixture_sha256": "f8b2c93cbfb98f10eacaadc0759742d51d47b83ee7463d623f83256ba7617800",
+      "labels_path": "evals/ground_truth/labels.json",
+      "labels_sha256": "33cb52275a32d3d84f41a1bb183448827e88cfa25edd375fb31455f392179940",
+      "prompt_sha256": "c59be8389b1ebbf1abb0d2ec609934c8d99732c1cb2c672b3bdbe84ec8293057",
+      "prompt_source": "casepilot.backend.agent.SYSTEM_PROMPT",
+      "model": "z-ai/glm-5.3-flash",
+      "split": "evaluation"
+    },
+    "session_spend_usd": 0.013817850000000001,
+    "gaps": [
+      "Backend is sole CostLedger mutator; eval does not reserve/settle (avoids double-charging).",
+      "Live spend is application-enforced; not a provider hard cap."
+    ],
+    "scorecard": {
+      "n": 8,
+      "failures": 0,
+      "category_correct": 7,
+      "category_accuracy": 0.875,
+      "evidence_correct": 7,
+      "evidence_accuracy": 0.875,
+      "uncertainty_correct": 1,
+      "uncertainty_scored": 1,
+      "uncertainty_accuracy": 1.0,
+      "action_correct": 6,
+      "action_auto_scored": 8,
+      "action_manual_pending": 0,
+      "action_accuracy_auto": 0.75,
+      "terminated_ok": 8,
+      "caveats": [
+        "Evidence metric: required IDs must be evidence.record_id with non-empty retrieval_ref (no ref-token bypass; no semantic entailment claim).",
+        "create_follow_up_task is never auto-scored correct against fixture labels.",
+        "Failures/timeouts are included in the denominator as incorrect."
+      ],
+      "grades": [
+        {
+          "case_id": "CASE-004",
+          "category_ok": true,
+          "evidence_ok": true,
+          "uncertainty_ok": null,
+          "action_ok": true,
+          "terminated_ok": true,
+          "failed": false,
+          "action_needs_manual": false,
+          "notes": [],
+          "predicted_category": "missing_document",
+          "predicted_action": "request_missing_document",
+          "status": "completed"
+        },
+        {
+          "case_id": "CASE-005",
+          "category_ok": true,
+          "evidence_ok": true,
+          "uncertainty_ok": null,
+          "action_ok": true,
+          "terminated_ok": true,
+          "failed": false,
+          "action_needs_manual": false,
+          "notes": [],
+          "predicted_category": "missing_document",
+          "predicted_action": "request_missing_document",
+          "status": "completed"
+        },
+        {
+          "case_id": "CASE-009",
+          "category_ok": true,
+          "evidence_ok": true,
+          "uncertainty_ok": null,
+          "action_ok": false,
+          "terminated_ok": true,
+          "failed": false,
+          "action_needs_manual": false,
+          "notes": [
+            "action escalate_to_human not in mapped acceptable ['correct_data_mismatch']"
+          ],
+          "predicted_category": "data_mismatch",
+          "predicted_action": "escalate_to_human",
+          "status": "completed"
+        },
+        {
+          "case_id": "CASE-010",
+          "category_ok": true,
+          "evidence_ok": true,
+          "uncertainty_ok": null,
+          "action_ok": false,
+          "terminated_ok": true,
+          "failed": false,
+          "action_needs_manual": false,
+          "notes": [
+            "action escalate_to_human not in mapped acceptable ['correct_data_mismatch']"
+          ],
+          "predicted_category": "data_mismatch",
+          "predicted_action": "escalate_to_human",
+          "status": "indeterminate"
+        },
+        {
+          "case_id": "CASE-014",
+          "category_ok": true,
+          "evidence_ok": true,
+          "uncertainty_ok": null,
+          "action_ok": true,
+          "terminated_ok": true,
+          "failed": false,
+          "action_needs_manual": false,
+          "notes": [],
+          "predicted_category": "processing_failure",
+          "predicted_action": "retry_processing",
+          "status": "completed"
+        },
+        {
+          "case_id": "CASE-015",
+          "category_ok": true,
+          "evidence_ok": true,
+          "uncertainty_ok": null,
+          "action_ok": true,
+          "terminated_ok": true,
+          "failed": false,
+          "action_needs_manual": false,
+          "notes": [],
+          "predicted_category": "processing_failure",
+          "predicted_action": "retry_processing",
+          "status": "completed"
+        },
+        {
+          "case_id": "CASE-018",
+          "category_ok": false,
+          "evidence_ok": true,
+          "uncertainty_ok": true,
+          "action_ok": true,
+          "terminated_ok": true,
+          "failed": false,
+          "action_needs_manual": false,
+          "notes": [],
+          "predicted_category": "processing_failure",
+          "predicted_action": "retry_processing",
+          "status": "completed"
+        },
+        {
+          "case_id": "CASE-020",
+          "category_ok": true,
+          "evidence_ok": false,
+          "uncertainty_ok": null,
+          "action_ok": true,
+          "terminated_ok": true,
+          "failed": false,
+          "action_needs_manual": false,
+          "notes": [
+            "evidence requires label IDs as record_id with non-empty retrieval_ref (ID-level only; no entailment; no retrieval_ref token bypass)"
+          ],
+          "predicted_category": "no_issue",
+          "predicted_action": "no_action_required",
+          "status": "completed"
+        }
+      ]
+    },
+    "cases": [
+      {
+        "case_id": "CASE-004",
+        "ok": true,
+        "status": "completed",
+        "diagnosis": "missing_document",
+        "next_action": "request_missing_document",
+        "latency_s": 8.366,
+        "cost_usd": 0.00164546,
+        "provider_model": "z-ai/glm-5.3-flash",
+        "run_id": "3678a362-b395-4497-9c0a-9bcd141c7111",
+        "evidence_record_ids": [
+          "CASE-004",
+          "DOC-004-B",
+          "EVT-004-A",
+          "EVT-004-B"
+        ],
+        "had_uncertainty_field": false,
+        "proposal_id": null,
+        "grade": {
+          "category_ok": true,
+          "evidence_ok": true,
+          "uncertainty_ok": null,
+          "action_ok": true,
+          "terminated_ok": true,
+          "failed": false,
+          "predicted_category": "missing_document",
+          "predicted_action": "request_missing_document",
+          "notes": []
+        }
+      },
+      {
+        "case_id": "CASE-005",
+        "ok": true,
+        "status": "completed",
+        "diagnosis": "missing_document",
+        "next_action": "request_missing_document",
+        "latency_s": 8.693,
+        "cost_usd": 0.0015676800000000001,
+        "provider_model": "z-ai/glm-5.3-flash",
+        "run_id": "e2ec2b1a-860b-4589-aaaf-3a2414f0ccd5",
+        "evidence_record_ids": [
+          "CASE-005",
+          "DOC-005-B",
+          "EVT-005-A",
+          "EVT-005-B"
+        ],
+        "had_uncertainty_field": false,
+        "proposal_id": null,
+        "grade": {
+          "category_ok": true,
+          "evidence_ok": true,
+          "uncertainty_ok": null,
+          "action_ok": true,
+          "terminated_ok": true,
+          "failed": false,
+          "predicted_category": "missing_document",
+          "predicted_action": "request_missing_document",
+          "notes": []
+        }
+      },
+      {
+        "case_id": "CASE-009",
+        "ok": true,
+        "status": "completed",
+        "diagnosis": "data_mismatch",
+        "next_action": "escalate_to_human",
+        "latency_s": 15.071,
+        "cost_usd": 0.0019072999999999998,
+        "provider_model": "z-ai/glm-5.3-flash",
+        "run_id": "63aa50ff-6980-458e-abeb-5c46217b3be5",
+        "evidence_record_ids": [
+          "CASE-009",
+          "DOC-009-C",
+          "EVT-009-A",
+          "EVT-009-B"
+        ],
+        "had_uncertainty_field": true,
+        "proposal_id": null,
+        "grade": {
+          "category_ok": true,
+          "evidence_ok": true,
+          "uncertainty_ok": null,
+          "action_ok": false,
+          "terminated_ok": true,
+          "failed": false,
+          "predicted_category": "data_mismatch",
+          "predicted_action": "escalate_to_human",
+          "notes": [
+            "action escalate_to_human not in mapped acceptable ['correct_data_mismatch']"
+          ]
+        }
+      },
+      {
+        "case_id": "CASE-010",
+        "ok": true,
+        "status": "indeterminate",
+        "diagnosis": "data_mismatch",
+        "next_action": "escalate_to_human",
+        "latency_s": 14.37,
+        "cost_usd": 0.00210377,
+        "provider_model": "z-ai/glm-5.3-flash",
+        "run_id": "ce1d5ca9-2028-4885-ae1c-8cdd5529ccae",
+        "evidence_record_ids": [
+          "CASE-010",
+          "DOC-010-B",
+          "EVT-010-B"
+        ],
+        "had_uncertainty_field": true,
+        "proposal_id": null,
+        "grade": {
+          "category_ok": true,
+          "evidence_ok": true,
+          "uncertainty_ok": null,
+          "action_ok": false,
+          "terminated_ok": true,
+          "failed": false,
+          "predicted_category": "data_mismatch",
+          "predicted_action": "escalate_to_human",
+          "notes": [
+            "action escalate_to_human not in mapped acceptable ['correct_data_mismatch']"
+          ]
+        }
+      },
+      {
+        "case_id": "CASE-014",
+        "ok": true,
+        "status": "completed",
+        "diagnosis": "processing_failure",
+        "next_action": "retry_processing",
+        "latency_s": 10.21,
+        "cost_usd": 0.0017907700000000001,
+        "provider_model": "z-ai/glm-5.3-flash",
+        "run_id": "d95dcf52-f631-4d1a-ae91-94c64f374429",
+        "evidence_record_ids": [
+          "CASE-014",
+          "DOC-014-A",
+          "DOC-014-B",
+          "EVT-014-A",
+          "EVT-014-B"
+        ],
+        "had_uncertainty_field": true,
+        "proposal_id": null,
+        "grade": {
+          "category_ok": true,
+          "evidence_ok": true,
+          "uncertainty_ok": null,
+          "action_ok": true,
+          "terminated_ok": true,
+          "failed": false,
+          "predicted_category": "processing_failure",
+          "predicted_action": "retry_processing",
+          "notes": []
+        }
+      },
+      {
+        "case_id": "CASE-015",
+        "ok": true,
+        "status": "completed",
+        "diagnosis": "processing_failure",
+        "next_action": "retry_processing",
+        "latency_s": 12.9,
+        "cost_usd": 0.00187571,
+        "provider_model": "z-ai/glm-5.3-flash",
+        "run_id": "657af5b4-a59d-4261-ae86-1d88acbfee4e",
+        "evidence_record_ids": [
+          "CASE-015",
+          "DOC-015-A",
+          "EVT-015-A",
+          "EVT-015-B"
+        ],
+        "had_uncertainty_field": true,
+        "proposal_id": null,
+        "grade": {
+          "category_ok": true,
+          "evidence_ok": true,
+          "uncertainty_ok": null,
+          "action_ok": true,
+          "terminated_ok": true,
+          "failed": false,
+          "predicted_category": "processing_failure",
+          "predicted_action": "retry_processing",
+          "notes": []
+        }
+      },
+      {
+        "case_id": "CASE-018",
+        "ok": true,
+        "status": "completed",
+        "diagnosis": "processing_failure",
+        "next_action": "retry_processing",
+        "latency_s": 12.694,
+        "cost_usd": 0.0017783400000000002,
+        "provider_model": "z-ai/glm-5.3-flash",
+        "run_id": "16fa621d-f811-444b-8f64-64a596452166",
+        "evidence_record_ids": [
+          "CASE-018",
+          "EVT-018-A",
+          "EVT-018-B",
+          "EVT-018-C"
+        ],
+        "had_uncertainty_field": false,
+        "proposal_id": null,
+        "grade": {
+          "category_ok": false,
+          "evidence_ok": true,
+          "uncertainty_ok": true,
+          "action_ok": true,
+          "terminated_ok": true,
+          "failed": false,
+          "predicted_category": "processing_failure",
+          "predicted_action": "retry_processing",
+          "notes": []
+        }
+      },
+      {
+        "case_id": "CASE-020",
+        "ok": true,
+        "status": "completed",
+        "diagnosis": "no_issue",
+        "next_action": "no_action_required",
+        "latency_s": 4.486,
+        "cost_usd": 0.00114882,
+        "provider_model": "z-ai/glm-5.3-flash",
+        "run_id": "b07747a7-641b-43d2-bf7f-b65c434ee4a3",
+        "evidence_record_ids": [],
+        "had_uncertainty_field": true,
+        "proposal_id": null,
+        "grade": {
+          "category_ok": true,
+          "evidence_ok": false,
+          "uncertainty_ok": null,
+          "action_ok": true,
+          "terminated_ok": true,
+          "failed": false,
+          "predicted_category": "no_issue",
+          "predicted_action": "no_action_required",
+          "notes": [
+            "evidence requires label IDs as record_id with non-empty retrieval_ref (ID-level only; no entailment; no retrieval_ref token bypass)"
+          ]
+        }
+      }
+    ],
+    "behavioral_misses": {
+      "CASE-009": "correct category data_mismatch but escalated instead of correct_data_mismatch",
+      "CASE-010": "correct category but escalated instead of correct_data_mismatch; status indeterminate",
+      "CASE-018": "category miss: predicted processing_failure vs ground truth; action/evidence correct",
+      "CASE-020": "evidence miss: no_issue case lacked label-ID evidence record_id with retrieval_ref"
+    },
+    "exception_categories_demonstrated": {
+      "missing_document": [
+        "CASE-004",
+        "CASE-005"
+      ],
+      "data_mismatch": [
+        "CASE-009",
+        "CASE-010"
+      ],
+      "processing_failure": [
+        "CASE-014",
+        "CASE-015",
+        "CASE-018"
+      ],
+      "no_issue": [
+        "CASE-020"
+      ]
+    },
+    "no_prompt_tuning": "labels used for grading only; no prompt or code edits made"
+  },
+  "ledger_snapshot": {
+    "path": "evals/reports/cost_ledger.json",
+    "budget_usd": 5.0,
+    "spent_usd": 0.01718485,
+    "reserved_usd": 0.0,
+    "pricing_reliable": true,
+    "allowed_model": "z-ai/glm-5.3-flash",
+    "open_reservations": {},
+    "notes": [
+      "Backend is sole mutator; eval must not double-reserve.",
+      "Application policy only \u2014 not a provider hard cap.",
+      "Global envelope $5.00; GLM-only z-ai/glm-5.3-flash.",
+      "Default reserve = unit prices \u00d7 default token ceiling."
+    ],
+    "entry_kinds_present": [
+      "release",
+      "reserve",
+      "settle"
+    ],
+    "case001_success_settle_usd": 0.00169768,
+    "case001_success_run_id": "82e71af3-2bfa-4145-9b51-8afa58644fc4",
+    "settled_case_ids": [
+      "CASE-001",
+      "CASE-004",
+      "CASE-005",
+      "CASE-009",
+      "CASE-010",
+      "CASE-014",
+      "CASE-015",
+      "CASE-018",
+      "CASE-020"
+    ]
+  }
+}
