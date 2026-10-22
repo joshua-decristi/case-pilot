@@ -63,6 +63,50 @@ Follow-up task writes are **idempotent on `proposal_id`**: identical retry retur
 
 Auth header: `Authorization: Bearer <SIMULATOR_SERVICE_TOKEN>`.
 
+## Investigation backend (direct uvicorn)
+
+Investigation orchestration, run storage (`BACKEND_DB_PATH`, default `.data/backend.sqlite3`), JSONL traces (`TRACE_DIR`, default `traces/`), and the single approved-write path to the simulator. Auth: approve/reject require `Authorization: Bearer <OPERATOR_TOKEN>`; all other routes are local-unauthenticated. The backend calls the simulator over HTTP only — it never reads `SIMULATOR_DB_PATH`.
+
+```bash
+# Tokens required in env (same .env as the simulator; backend reuses both)
+# Live investigations additionally need OPENROUTER_API_KEY; without it the
+# run fails visibly with a clear missing-key error — no silent fallback.
+
+# With the simulator already serving on :8001, serve on loopback :8000
+uv run uvicorn casepilot.backend.app:app --host 127.0.0.1 --port 8000
+```
+
+### API surface
+
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| GET | `/health` | none | liveness |
+| POST | `/v1/investigations` | none | body `{"case_id": "...", "objective": "..."}`; synchronous agent run |
+| GET | `/v1/investigations/{run_id}` | none | stored run record |
+| GET | `/v1/proposals/{proposal_id}` | none | proposal with `payload_digest` |
+| GET | `/v1/cases/{case_id}/proposals` | none | list proposals for a case |
+| POST | `/v1/proposals/{proposal_id}/approve` | Bearer operator token | body `{"operator_identity": "..."}`; executes the proposed write |
+| POST | `/v1/proposals/{proposal_id}/reject` | Bearer operator token | body `{"operator_identity": "...", "reason": "..."}`; terminal |
+
+Evidence cited by the run is validated against records actually retrieved this run; a proposal is only created when the agent proposes `create_follow_up_task` and every evidence row is grounded.
+
+### End-to-end without the CLI
+
+```bash
+# 1. Investigate a seeded case (returns run result + proposal_id when a write is proposed)
+curl -s -X POST http://127.0.0.1:8000/v1/investigations \
+  -H 'Content-Type: application/json' \
+  -d '{"case_id": "CASE-001", "objective": "Why is this case stalled?"}'
+
+# 2. Read the proposal (idempotency-ready payload digest is stored server-side)
+curl -s http://127.0.0.1:8000/v1/proposals/<proposal_id>
+
+# 3. Approve (the ONLY path that writes to the simulator) or reject (terminal)
+curl -s -X POST http://127.0.0.1:8000/v1/proposals/<proposal_id>/approve \
+  -H "Authorization: Bearer $OPERATOR_TOKEN" \
+  -H 'Content-Type: application/json' -d '{}'
+```
+
 ## Cost ledger (live only)
 
 - **Envelope:** $5 USD total, GLM-only (`z-ai/glm-5.3-flash`) — enforced via `casepilot.evaluation.cost.CostLedger`; the backend is the sole ledger mutator.

@@ -626,12 +626,15 @@ def test_metadata_hashes_and_honest_git(monkeypatch: pytest.MonkeyPatch) -> None
     """Honest gap: prompt hash absent while the backend prompt module is blocked.
 
     Deliberately forces the lazy ``casepilot.backend.agent`` import to fail so
-    this passes identically with or without ``casepilot.backend`` present (the
-    package is not committed yet). The backend-specific ``SYSTEM_PROMPT`` hash
-    assertion is deferred to the backend commit; the full original suite is
-    preserved out-of-repo at ``/tmp/casepilot-commit-final``.
+    this passes identically with or without ``casepilot.backend`` importable.
+    The backend-specific ``SYSTEM_PROMPT`` hash assertion lives in
+    tests/unit/test_metadata_backend_prompt.py.
     """
-    monkeypatch.setitem(sys.modules, "casepilot.backend", None)
+    # Block every cached casepilot.backend* entry, not just the parent package:
+    # other tests import casepilot.backend.agent (tests/helpers), which would
+    # otherwise satisfy the lazy import below.
+    for name in [k for k in sys.modules if k.startswith("casepilot.backend")]:
+        monkeypatch.setitem(sys.modules, name, None)
     meta = collect_metadata(labels_path=LABELS, model=ALLOWED_LIVE_MODEL, split="evaluation")
     assert meta.labels_sha256 and len(meta.labels_sha256) == 64
     assert meta.fixture_sha256
