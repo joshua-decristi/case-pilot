@@ -90,6 +90,24 @@ uv run uvicorn casepilot.backend.app:app --host 127.0.0.1 --port 8000
 
 Evidence cited by the run is validated against records actually retrieved this run; a proposal is only created when the agent proposes `create_follow_up_task` and every evidence row is grounded.
 
+## Operator CLI
+
+`casepilot` is a thin HTTPX client over the backend HTTP API (installed via `[project.scripts]`; also `uv run casepilot ...`).
+
+```bash
+# After backend is serving on :8000 (settings from env / .env)
+uv run casepilot investigate CASE-001              # start a run (default objective)
+uv run casepilot run <run_id>                      # fetch a stored run
+uv run casepilot proposal <proposal_id>            # fetch a proposal
+uv run casepilot approve <proposal_id>             # operator-token write to simulator
+uv run casepilot reject <proposal_id> --reason R   # terminal decision
+
+# Machine-readable output on any subcommand
+uv run casepilot --json investigate CASE-001
+```
+
+Human output surfaces `proposal_id` (and the approve command) first. Errors print to stderr with exit code 1 (API/backend failure) or 2 (configuration error); success exits 0.
+
 ### End-to-end without the CLI
 
 ```bash
