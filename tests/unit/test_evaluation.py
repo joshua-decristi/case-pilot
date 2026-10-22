@@ -1,4 +1,4 @@
-"""Unit tests for the cost ledger (no paid model calls)."""
+"""Unit tests for the evaluation harness (no paid model calls)."""
 
 from __future__ import annotations
 
@@ -23,6 +23,22 @@ from casepilot.evaluation.cost import (
     load_verified_prices,
     validate_live_model,
 )
+from casepilot.evaluation.grader import (
+    FIXTURE_ACTION_TO_NEXT,
+    grade_case,
+    grade_results,
+    load_ground_truth,
+)
+from casepilot.shared.contracts import (
+    Diagnosis,
+    Evidence,
+    InvestigationResult,
+    NextAction,
+    RunStatus,
+)
+
+ROOT = Path(__file__).resolve().parents[2]
+LABELS = ROOT / "evals" / "ground_truth" / "labels.json"
 
 
 def _vprice(
@@ -40,6 +56,213 @@ def _vprice(
         verified_at="test",
         verified=True,
     )
+
+
+def _result(
+    case_id: str = "CASE-001",
+    *,
+    diagnosis: Diagnosis = Diagnosis.MISSING_DOCUMENT,
+    status: RunStatus = RunStatus.COMPLETED,
+    next_action: NextAction = NextAction.REQUEST_MISSING_DOCUMENT,
+    evidence_ids: list[str] | None = None,
+    retrieval_refs: list[str] | None = None,
+    uncertainty: str | None = None,
+    unresolved: list[str] | None = None,
+) -> InvestigationResult:
+    ids = evidence_ids if evidence_ids is not None else ["CASE-001", "EVT-001-A"]
+    refs = retrieval_refs if retrieval_refs is not None else ["get_events"] * len(ids)
+    if len(refs) < len(ids):
+        refs = list(refs) + ["tool"] * (len(ids) - len(refs))
+    evidence = [
+        Evidence(
+            source_system="simulator",
+            record_id=rid,
+            field="status",
+            fact="observed",
+            retrieval_ref=refs[i],
+        )
+        for i, rid in enumerate(ids)
+    ]
+    return InvestigationResult(
+        run_id="run-test",
+        case_id=case_id,
+        status=status,
+        diagnosis=diagnosis,
+        diagnosis_summary="summary",
+        explanation="explanation",
+        evidence=evidence,
+        uncertainty=uncertainty,
+        unresolved_questions=unresolved or [],
+        next_action=next_action,
+        next_action_explanation="because",
+        approval_required=next_action == NextAction.CREATE_FOLLOW_UP_TASK,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Ground truth + action mapping
+# ---------------------------------------------------------------------------
+
+
+def test_load_ground_truth_split_and_mapping() -> None:
+    gt = load_ground_truth(LABELS)
+    assert gt.version == "1.0"
+    assert len(gt.cases) == 20
+    assert len(gt.evaluation_ids) == 8
+    assert len(gt.development_ids) == 12
+    assert set(gt.evaluation_ids).isdisjoint(gt.development_ids)
+    assert FIXTURE_ACTION_TO_NEXT["request_document"] == NextAction.REQUEST_MISSING_DOCUMENT
+    assert FIXTURE_ACTION_TO_NEXT["reconcile_data"] == NextAction.CORRECT_DATA_MISMATCH
+    assert FIXTURE_ACTION_TO_NEXT["investigate_processing"] == NextAction.RETRY_PROCESSING
+    assert FIXTURE_ACTION_TO_NEXT["escalate"] == NextAction.ESCALATE_TO_HUMAN
+    assert FIXTURE_ACTION_TO_NEXT["no_action"] == NextAction.NO_ACTION_REQUIRED
+    assert NextAction.CREATE_FOLLOW_UP_TASK not in FIXTURE_ACTION_TO_NEXT.values()
+
+
+def test_grade_category_action_evidence_happy_path() -> None:
+    gt = load_ground_truth(LABELS)
+    label = gt.cases["CASE-001"]
+    result = _result(
+        "CASE-001",
+        evidence_ids=["CASE-001", "EVT-001-A"],
+        next_action=NextAction.REQUEST_MISSING_DOCUMENT,
+    )
+    g = grade_case(label, result)
+    assert g.category_ok is True
+    assert g.evidence_ok is True
+    assert g.action_ok is True
+    assert g.action_needs_manual is False
+    assert g.uncertainty_ok is None
+    assert g.failed is False
+
+
+def test_evidence_requires_record_id_not_ref_token_bypass() -> None:
+    """IDs stuffed only into retrieval_ref path must NOT satisfy evidence."""
+    gt = load_ground_truth(LABELS)
+    label = gt.cases["CASE-011"]
+    # alternative needs EVT-011-A as record_id — ref path alone is insufficient
+    result = _result(
+        "CASE-011",
+        diagnosis=Diagnosis.PROCESSING_FAILURE,
+        next_action=NextAction.RETRY_PROCESSING,
+        evidence_ids=["CASE-011"],
+        retrieval_refs=["get_events/EVT-011-A#1"],
+    )
+    assert grade_case(label, result).evidence_ok is False
+
+    ok = _result(
+        "CASE-011",
+        diagnosis=Diagnosis.PROCESSING_FAILURE,
+        next_action=NextAction.RETRY_PROCESSING,
+        evidence_ids=["EVT-011-A"],
+        retrieval_refs=["get_events"],
+    )
+    assert grade_case(label, ok).evidence_ok is True
+
+
+def test_evidence_requires_nonempty_retrieval_ref() -> None:
+    gt = load_ground_truth(LABELS)
+    label = gt.cases["CASE-001"]
+    result = _result(
+        "CASE-001",
+        evidence_ids=["CASE-001", "EVT-001-A"],
+        retrieval_refs=["", ""],
+    )
+    assert grade_case(label, result).evidence_ok is False
+
+
+def test_evidence_alternative_any_of() -> None:
+    gt = load_ground_truth(LABELS)
+    label = gt.cases["CASE-001"]
+    result = _result("CASE-001", evidence_ids=["CASE-001", "EVT-001-B"])
+    assert grade_case(label, result).evidence_ok is True
+    bad = _result("CASE-001", evidence_ids=["CASE-001"])
+    assert grade_case(label, bad).evidence_ok is False
+
+
+def test_create_follow_up_task_not_auto_correct() -> None:
+    gt = load_ground_truth(LABELS)
+    label = gt.cases["CASE-001"]
+    result = _result(
+        "CASE-001",
+        next_action=NextAction.CREATE_FOLLOW_UP_TASK,
+        evidence_ids=["CASE-001", "EVT-001-A"],
+    )
+    g = grade_case(label, result)
+    assert g.action_ok is None
+    assert g.action_needs_manual is True
+    assert any("manual" in n.lower() for n in g.notes)
+
+
+def test_uncertainty_required_on_indeterminate() -> None:
+    gt = load_ground_truth(LABELS)
+    label = gt.cases["CASE-016"]
+    assert label.require_uncertainty is True
+    missing = _result(
+        "CASE-016",
+        diagnosis=Diagnosis.INDETERMINATE,
+        next_action=NextAction.ESCALATE_TO_HUMAN,
+        evidence_ids=["DOC-016-B", "DOC-016-C"],
+        uncertainty=None,
+    )
+    assert grade_case(label, missing).uncertainty_ok is False
+    present = _result(
+        "CASE-016",
+        diagnosis=Diagnosis.INDETERMINATE,
+        next_action=NextAction.ESCALATE_TO_HUMAN,
+        evidence_ids=["DOC-016-B", "DOC-016-C"],
+        uncertainty="vendor vs store conflict",
+    )
+    assert grade_case(label, present).uncertainty_ok is True
+
+
+def test_failures_count_in_denominator_as_incorrect() -> None:
+    gt = load_ground_truth(LABELS)
+    failed = _result(
+        "CASE-001",
+        status=RunStatus.FAILED,
+        diagnosis=Diagnosis.INDETERMINATE,
+        next_action=NextAction.ESCALATE_TO_HUMAN,
+        evidence_ids=[],
+    )
+    good = _result(
+        "CASE-019",
+        diagnosis=Diagnosis.NO_ISSUE,
+        next_action=NextAction.NO_ACTION_REQUIRED,
+        evidence_ids=["CASE-019", "EVT-019-A", "EVT-019-B"],
+    )
+    sc = grade_results(
+        gt,
+        {"CASE-001": failed, "CASE-019": good, "CASE-004": None},
+        errors={"CASE-004": "timeout"},
+    )
+    assert sc.n == 3
+    assert sc.failures >= 2
+    assert sc.category_correct == 1
+    assert sc.category_accuracy == pytest.approx(1 / 3)
+    assert sc.evidence_correct == 1
+    assert sc.action_auto_scored >= 2
+    assert any("denominator" in c.lower() or "Failure" in c for c in sc.caveats)
+
+
+def test_wrong_action_mapped() -> None:
+    gt = load_ground_truth(LABELS)
+    label = gt.cases["CASE-019"]
+    result = _result(
+        "CASE-019",
+        diagnosis=Diagnosis.NO_ISSUE,
+        next_action=NextAction.REQUEST_MISSING_DOCUMENT,
+        evidence_ids=["CASE-019", "EVT-019-A", "EVT-019-B"],
+    )
+    g = grade_case(label, result)
+    assert g.category_ok is True
+    assert g.action_ok is False
+
+
+def test_no_entailment_caveat_in_scorecard() -> None:
+    gt = load_ground_truth(LABELS)
+    sc = grade_results(gt, {"CASE-001": _result()})
+    assert any("entailment" in c.lower() for c in sc.caveats)
 
 
 # ---------------------------------------------------------------------------

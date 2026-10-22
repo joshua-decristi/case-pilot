@@ -68,3 +68,7 @@ Auth header: `Authorization: Bearer <SIMULATOR_SERVICE_TOKEN>`.
 - **Envelope:** $5 USD total, GLM-only (`z-ai/glm-5.3-flash`) — enforced via `casepilot.evaluation.cost.CostLedger`; the backend is the sole ledger mutator.
 - **Unit prices** come only from verified config: `evals/pricing/verified_prices.json` (override via `CASEPILOT_VERIFIED_PRICES_PATH`); see `verified_prices.example.json` for the schema. No guessed ceilings in code.
 - Default ledger file: `evals/reports/cost_ledger.json` (gitignored). Missing usage on settle fails closed (full reserve charged + pricing marked unreliable); operator-only stale-reservation recovery settles at full reserve (`--recover-stale-reservations`).
+
+## Ground truth labels
+
+`evals/ground_truth/labels.json` holds evaluator-only labels: expected categories, acceptable fixture action codes, evidence predicates, uncertainty requirements, and a development/evaluation split. Grading (`casepilot.evaluation.grader`) is rule-based — category match, record-ID + non-empty `retrieval_ref` evidence coverage, uncertainty presence, mapped action codes, termination — never an LLM judge; `create_follow_up_task` is not auto-corrected against labels. Labels are for scoring only: do not tune prompts against held-out labels and then claim unseen performance.

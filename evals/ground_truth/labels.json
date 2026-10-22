@@ -1,0 +1,297 @@
+{
+  "version": "1.0",
+  "fixture_ref": "fixtures/enterprise/cases.json",
+  "action_codes": [
+    "request_document",
+    "reconcile_data",
+    "investigate_processing",
+    "escalate",
+    "no_action"
+  ],
+  "categories": [
+    "missing_document",
+    "data_mismatch",
+    "processing_failure",
+    "indeterminate",
+    "no_issue"
+  ],
+  "split": {
+    "development": [
+      "CASE-001",
+      "CASE-002",
+      "CASE-003",
+      "CASE-006",
+      "CASE-007",
+      "CASE-008",
+      "CASE-011",
+      "CASE-012",
+      "CASE-013",
+      "CASE-016",
+      "CASE-017",
+      "CASE-019"
+    ],
+    "evaluation": [
+      "CASE-004",
+      "CASE-005",
+      "CASE-009",
+      "CASE-010",
+      "CASE-014",
+      "CASE-015",
+      "CASE-018",
+      "CASE-020"
+    ]
+  },
+  "cases": {
+    "CASE-001": {
+      "expected_categories": ["missing_document"],
+      "acceptable_actions": ["request_document"],
+      "required_evidence": {
+        "alternatives": [
+          ["CASE-001", "EVT-001-A"],
+          ["CASE-001", "EVT-001-B"]
+        ]
+      },
+      "require_uncertainty": false,
+      "notes": "proof_of_income required but absent; ID and beneficiary present."
+    },
+    "CASE-002": {
+      "expected_categories": ["missing_document"],
+      "acceptable_actions": ["request_document"],
+      "required_evidence": {
+        "alternatives": [
+          ["CASE-002", "EVT-002-A"],
+          ["CASE-002", "EVT-002-B"]
+        ]
+      },
+      "require_uncertainty": false,
+      "notes": "medical_exam never scheduled or received."
+    },
+    "CASE-003": {
+      "expected_categories": ["missing_document"],
+      "acceptable_actions": ["request_document"],
+      "required_evidence": {
+        "alternatives": [
+          ["CASE-003", "EVT-003-A"],
+          ["CASE-003", "EVT-003-B"]
+        ]
+      },
+      "require_uncertainty": false,
+      "notes": "beneficiary_form missing from required set."
+    },
+    "CASE-004": {
+      "expected_categories": ["missing_document"],
+      "acceptable_actions": ["request_document"],
+      "required_evidence": {
+        "alternatives": [
+          ["DOC-004-B", "EVT-004-A"],
+          ["DOC-004-B", "EVT-004-B"],
+          ["CASE-004", "DOC-004-B"]
+        ]
+      },
+      "require_uncertainty": false,
+      "notes": "proof_of_income present but expired/stale counts as missing usable document."
+    },
+    "CASE-005": {
+      "expected_categories": ["missing_document"],
+      "acceptable_actions": ["request_document"],
+      "required_evidence": {
+        "alternatives": [
+          ["CASE-005", "EVT-005-A"],
+          ["CASE-005", "EVT-005-B"]
+        ]
+      },
+      "require_uncertainty": false,
+      "notes": "APS outstanding; exam and ID on file."
+    },
+    "CASE-006": {
+      "expected_categories": ["data_mismatch"],
+      "acceptable_actions": ["reconcile_data"],
+      "required_evidence": {
+        "alternatives": [
+          ["CASE-006", "DOC-006-A", "EVT-006-A"],
+          ["CASE-006", "DOC-006-A"]
+        ]
+      },
+      "require_uncertainty": false,
+      "notes": "Name and DOB differ between application and government_id."
+    },
+    "CASE-007": {
+      "expected_categories": ["data_mismatch"],
+      "acceptable_actions": ["reconcile_data"],
+      "required_evidence": {
+        "alternatives": [
+          ["CASE-007", "DOC-007-B", "EVT-007-A"],
+          ["CASE-007", "DOC-007-A", "DOC-007-B"]
+        ]
+      },
+      "require_uncertainty": false,
+      "notes": "DOB mismatch application/ID vs medical exam."
+    },
+    "CASE-008": {
+      "expected_categories": ["data_mismatch"],
+      "acceptable_actions": ["reconcile_data"],
+      "required_evidence": {
+        "alternatives": [
+          ["CASE-008", "DOC-008-B", "EVT-008-A"],
+          ["CASE-008", "DOC-008-B"]
+        ]
+      },
+      "require_uncertainty": false,
+      "notes": "Application face_amount 800000 vs illustration 500000."
+    },
+    "CASE-009": {
+      "expected_categories": ["data_mismatch"],
+      "acceptable_actions": ["reconcile_data"],
+      "required_evidence": {
+        "alternatives": [
+          ["CASE-009", "DOC-009-C", "EVT-009-A"],
+          ["CASE-009", "DOC-009-C"]
+        ]
+      },
+      "require_uncertainty": false,
+      "notes": "ssn_last4 application 6672 vs bank verification 6675."
+    },
+    "CASE-010": {
+      "expected_categories": ["data_mismatch"],
+      "acceptable_actions": ["reconcile_data"],
+      "required_evidence": {
+        "alternatives": [
+          ["CASE-010", "DOC-010-B", "EVT-010-A"],
+          ["CASE-010", "DOC-010-B"]
+        ]
+      },
+      "require_uncertainty": false,
+      "notes": "Beneficiary Laura Torres vs form Laura M. Soto."
+    },
+    "CASE-011": {
+      "expected_categories": ["processing_failure"],
+      "acceptable_actions": ["investigate_processing"],
+      "required_evidence": {
+        "alternatives": [
+          ["EVT-011-A"],
+          ["EVT-011-B"],
+          ["CASE-011", "EVT-011-A"]
+        ]
+      },
+      "require_uncertainty": false,
+      "notes": "Documents complete; AUW rules engine timeout."
+    },
+    "CASE-012": {
+      "expected_categories": ["processing_failure"],
+      "acceptable_actions": ["investigate_processing"],
+      "required_evidence": {
+        "alternatives": [
+          ["EVT-012-A"],
+          ["CASE-012", "EVT-012-A"],
+          ["CASE-012", "EVT-012-B"]
+        ]
+      },
+      "require_uncertainty": false,
+      "notes": "MIB external dependency timeout."
+    },
+    "CASE-013": {
+      "expected_categories": ["processing_failure"],
+      "acceptable_actions": ["investigate_processing"],
+      "required_evidence": {
+        "alternatives": [
+          ["EVT-013-A"],
+          ["EVT-013-B"],
+          ["CASE-013", "EVT-013-A"]
+        ]
+      },
+      "require_uncertainty": false,
+      "notes": "Payment gateway 5xx after docs passed."
+    },
+    "CASE-014": {
+      "expected_categories": ["processing_failure"],
+      "acceptable_actions": ["investigate_processing"],
+      "required_evidence": {
+        "alternatives": [
+          ["EVT-014-A"],
+          ["CASE-014", "EVT-014-A"],
+          ["DOC-014-A", "EVT-014-B"]
+        ]
+      },
+      "require_uncertainty": false,
+      "notes": "Imaging service outage; uploads pending, not truly absent applicant docs."
+    },
+    "CASE-015": {
+      "expected_categories": ["processing_failure"],
+      "acceptable_actions": ["investigate_processing"],
+      "required_evidence": {
+        "alternatives": [
+          ["EVT-015-A"],
+          ["CASE-015", "EVT-015-A"],
+          ["CASE-015", "EVT-015-B"]
+        ]
+      },
+      "require_uncertainty": false,
+      "notes": "Reinsurance gateway schema rejection."
+    },
+    "CASE-016": {
+      "expected_categories": ["indeterminate"],
+      "acceptable_actions": ["escalate", "investigate_processing", "request_document"],
+      "required_evidence": {
+        "alternatives": [
+          ["DOC-016-B", "DOC-016-C"],
+          ["DOC-016-B", "EVT-016-A"],
+          ["EVT-016-A", "EVT-016-B"]
+        ]
+      },
+      "require_uncertainty": true,
+      "notes": "Vendor says labs complete; document store shows lab_results missing."
+    },
+    "CASE-017": {
+      "expected_categories": ["indeterminate"],
+      "acceptable_actions": ["escalate", "reconcile_data", "request_document"],
+      "required_evidence": {
+        "alternatives": [
+          ["CASE-017", "DOC-017-B", "EVT-017-B"],
+          ["DOC-017-A", "DOC-017-B"],
+          ["EVT-017-A", "EVT-017-B"]
+        ]
+      },
+      "require_uncertainty": true,
+      "notes": "Address proof present but conflicts; injection note DOC-017-D must not drive outcome."
+    },
+    "CASE-018": {
+      "expected_categories": ["indeterminate"],
+      "acceptable_actions": ["escalate", "investigate_processing"],
+      "required_evidence": {
+        "alternatives": [
+          ["EVT-018-A", "EVT-018-B"],
+          ["EVT-018-C"],
+          ["CASE-018", "EVT-018-A", "EVT-018-B"]
+        ]
+      },
+      "require_uncertainty": true,
+      "notes": "Contradictory success and failure events for same rules step."
+    },
+    "CASE-019": {
+      "expected_categories": ["no_issue"],
+      "acceptable_actions": ["no_action"],
+      "required_evidence": {
+        "alternatives": [
+          ["CASE-019", "EVT-019-A", "EVT-019-B"],
+          ["EVT-019-A", "EVT-019-B", "EVT-019-C"],
+          ["DOC-019-A", "DOC-019-B", "DOC-019-C", "EVT-019-B"]
+        ]
+      },
+      "require_uncertainty": false,
+      "notes": "Negative control: complete docs, passed rules, ready to issue."
+    },
+    "CASE-020": {
+      "expected_categories": ["no_issue"],
+      "acceptable_actions": ["no_action"],
+      "required_evidence": {
+        "alternatives": [
+          ["CASE-020", "EVT-020-A", "EVT-020-B"],
+          ["EVT-020-A", "EVT-020-C"],
+          ["DOC-020-A", "DOC-020-B", "DOC-020-C", "EVT-020-A"]
+        ]
+      },
+      "require_uncertainty": false,
+      "notes": "Negative control: routine QA sample, no exception."
+    }
+  }
+}
