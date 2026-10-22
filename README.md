@@ -72,3 +72,16 @@ Auth header: `Authorization: Bearer <SIMULATOR_SERVICE_TOKEN>`.
 ## Ground truth labels
 
 `evals/ground_truth/labels.json` holds evaluator-only labels: expected categories, acceptable fixture action codes, evidence predicates, uncertainty requirements, and a development/evaluation split. Grading (`casepilot.evaluation.grader`) is rule-based — category match, record-ID + non-empty `retrieval_ref` evidence coverage, uncertainty presence, mapped action codes, termination — never an LLM judge; `create_follow_up_task` is not auto-corrected against labels. Labels are for scoring only: do not tune prompts against held-out labels and then claim unseen performance.
+
+## Evaluation
+
+Entrypoint: `uv run python -m casepilot.evaluation` (mutually exclusive `--live` / `--offline`).
+
+```bash
+# Offline grade only — no OpenRouter
+uv run python -m casepilot.evaluation --offline path/to/results.json
+# Live — explicit max cases; budget ≤ $5; GLM-only; default split=evaluation
+uv run python -m casepilot.evaluation --live --max-cases 2 --budget-usd 5 --split evaluation
+```
+
+Useful flags: `--split {development,evaluation,all}`, `--max-cases` (live requires `> 0`), `--budget-usd` (capped at 5), `--model` (only `z-ai/glm-5.3-flash`), `--backend-url`, `--report-dir` (default `evals/reports`), `--labels`, `--json`. The live runner never sends ground-truth labels and never mutates the ledger — it observes remaining budget and enforces per-session thresholds. Reports land in `evals/reports/` (gitignored).
