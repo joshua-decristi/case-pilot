@@ -1,0 +1,43 @@
+# Secrets and local config
+.agent/
+.github/
+.env
+.env.*
+!.env.example
+
+# Python / tooling
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+.cache/
+
+# Local runtime data (DBs, WAL/SHM journals, ledgers, reports)
+.data/
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.db-wal
+*.db-shm
+traces/
+journals/
+evals/reports/
+!evals/reports/.gitkeep
+**/cost_ledger.json
+**/cost_ledger.json.lock
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
