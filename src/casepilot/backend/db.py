@@ -16,6 +16,7 @@ from casepilot.shared.contracts import (
     ProposalStatus,
     RunRecord,
     RunStatus,
+    RunSummary,
 )
 
 
@@ -257,6 +258,29 @@ class BackendStore:
                 (case_id,),
             ).fetchall()
         return [self._row_to_proposal(r) for r in rows]
+
+    def list_runs_for_case(self, case_id: str) -> list[RunSummary]:
+        """Persisted investigation history for a case, newest first."""
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT run_id, case_id, status, created_at, completed_at
+                FROM runs
+                WHERE case_id = ?
+                ORDER BY created_at DESC, run_id DESC
+                """,
+                (case_id,),
+            ).fetchall()
+        return [
+            RunSummary(
+                run_id=row["run_id"],
+                case_id=row["case_id"],
+                status=RunStatus(row["status"]),
+                created_at=_parse_dt(row["created_at"]) or _now(),
+                completed_at=_parse_dt(row["completed_at"]),
+            )
+            for row in rows
+        ]
 
     def case_action_flags(self) -> dict[str, tuple[bool, bool]]:
         """One-pass aggregate: case_id -> (pending_review, needs_execution).

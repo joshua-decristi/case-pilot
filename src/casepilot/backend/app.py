@@ -35,6 +35,7 @@ from casepilot.shared.contracts import (
     ProposalStatus,
     RejectProposalRequest,
     RunRecord,
+    RunSummary,
     StartInvestigationRequest,
     StartInvestigationResponse,
 )
@@ -228,6 +229,20 @@ def create_app(
                 detail=str(exc),
             ) from exc
         return CaseSummary(case_id=case.case_id, status=case.status, symptom=case.symptom)
+
+    @app.get(BackendRoutes.CASE_RUNS, response_model=list[RunSummary])
+    async def list_case_runs(case_id: str, request: Request) -> list[RunSummary]:
+        backend = _backend(request)
+        try:
+            await backend.client.get_case(case_id)
+        except SimulatorError as exc:
+            if exc.status_code == 404:
+                raise HTTPException(status_code=404, detail=f"case not found: {case_id}") from exc
+            raise HTTPException(
+                status_code=exc.status_code or 502,
+                detail=str(exc),
+            ) from exc
+        return backend.store.list_runs_for_case(case_id)
 
     @app.get(CASE_PROPOSALS, response_model=list[Proposal])
     async def list_case_proposals(case_id: str, request: Request) -> list[Proposal]:

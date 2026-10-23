@@ -84,6 +84,16 @@ class CaseListItem(BaseModel):
     needs_execution: bool
 
 
+class RunSummary(BaseModel):
+    """Item in GET /v1/cases/{case_id}/runs."""
+
+    run_id: str
+    case_id: str
+    status: RunStatus
+    created_at: datetime
+    completed_at: datetime | None = None
+
+
 class DocumentRecord(BaseModel):
     """Item in GET /v1/cases/{case_id}/documents"""
 
@@ -251,6 +261,7 @@ class BackendRoutes:
     RUN = "/v1/investigations/{run_id}"
     CASES = "/v1/cases"
     CASE = "/v1/cases/{case_id}"
+    CASE_RUNS = "/v1/cases/{case_id}/runs"
     CASE_PROPOSALS = "/v1/cases/{case_id}/proposals"
     PROPOSAL = "/v1/proposals/{proposal_id}"
     APPROVE = "/v1/proposals/{proposal_id}/approve"
