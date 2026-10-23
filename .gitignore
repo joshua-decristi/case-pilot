@@ -37,6 +37,11 @@ evals/reports/
 **/cost_ledger.json
 **/cost_ledger.json.lock
 
+# Frontend
+frontend/node_modules/
+frontend/dist/
+.playwright-cli/
+
 # IDE / OS
 .idea/
 .vscode/

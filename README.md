@@ -4,7 +4,7 @@ Local portfolio demo: an agent investigates **synthetic** stalled insurance case
 
 This is an **independent synthetic demonstration**. It is not a product of any insurer, does not use real customer data, and does not model any insurer’s internal systems, workflows, or requirements.
 
-**Stage:** CLI + HTTP APIs only (case list/summary + per-case run history). **No UI. No Docker.** Repository git metadata may be absent (`git_revision: unavailable` in reports until `git init`).
+**Stage:** CLI + HTTP APIs, plus a **local-only operator UI** for **case browsing** (list + brief summary). Investigation/history/proposal decision UI not in this slice. **No Docker. No production hosting.** Repository git metadata may be absent (`git_revision: unavailable` in reports until `git init`).
 
 Architecture sketch: [`docs/architecture.md`](docs/architecture.md). Sanitized sample live report: [`docs/sample-evaluation.json`](docs/sample-evaluation.json).
 
@@ -32,8 +32,8 @@ Primary artifacts: `evals/reports/live-smoke.json` (CASE-001 attempt **3** headl
 ## What it does
 
 ```text
-CLI (casepilot)
-    | HTTP
+CLI (casepilot)  or  Operator UI browse (Vite :5173 → /api proxy)
+    | HTTP (loopback)
 Investigation backend  -- LangChain agent -- OpenRouter (live runs only)
     | cost ledger (backend sole mutator) + authenticated HTTP
 Enterprise simulator
@@ -43,8 +43,9 @@ SQLite enterprise records + follow-up tasks
 
 - **Simulator** (`casepilot.simulator.app`, default `127.0.0.1:8001`): seeded synthetic cases (**list + get**), documents, processing events; service-token auth; owns `SIMULATOR_DB_PATH`.
 - **Backend** (`casepilot.backend.app`, default `127.0.0.1:8000`): investigation orchestration, proposals/approvals, run storage, **case list/summary with action flags**, **per-case run history**, JSONL traces, **global live-cost ledger**; operator-token auth for approve/reject; owns `BACKEND_DB_PATH` and `TRACE_DIR`.
+- **Operator UI** (`frontend/`, Vite default `http://127.0.0.1:5173`): **browsing only** in this slice — case list + brief summary on select. Same-origin `/api` via Vite dev proxy — **not** a production host. Investigate / history / proposal controls come later.
 
-Services bind loopback only. The backend never reads the simulator DB directly (and vice versa).
+Services bind loopback only. The backend never reads the simulator DB directly (and vice versa). The browser never talks to the simulator and never receives `SIMULATOR_SERVICE_TOKEN`.
 
 ### Case browsing APIs (backend + simulator)
 
@@ -64,7 +65,8 @@ Backend list aggregates action flags from persisted proposals in one pass (`pend
 
 - **Python 3.14** (pinned in `.python-version`)
 - **[uv](https://docs.astral.sh/uv/)** for install and runs
-- OpenRouter API key **only** for live investigations / live eval (not required for lint, typecheck, offline eval, or default pytest)
+- **Node.js + npm** only if you run the operator UI (`frontend/`)
+- OpenRouter API key **only** for live investigations / live eval (not required for lint, typecheck, offline eval, default pytest, or UI case browsing)
 
 ## Setup
 
@@ -75,6 +77,10 @@ make provision-local-auth   # appends random SIMULATOR_SERVICE_TOKEN + OPERATOR_
 make sync                   # uv sync --frozen --all-extras
 make seed                   # non-destructive fixture load (refuses non-empty simulator DB)
 make dev                    # start simulator + backend; wait on /health
+
+# Operator UI browse (separate process; needs make dev already up)
+npm install --prefix frontend
+npm run dev --prefix frontend   # http://127.0.0.1:5173
 ```
 
 ### Local auth
@@ -114,6 +120,32 @@ Optional: `CASEPILOT_COST_LEDGER_PATH` overrides the live cost ledger path (defa
 
 Do not commit `.env`, databases, traces, or generated eval reports (sanitized sample under `docs/` is intentional).
 
+
+### Operator UI (local browse)
+
+Local-first **case list + brief summary** shell over backend case APIs. **Not** production-hosted. This slice does **not** include Investigate, run history panel, findings, or approve/reject UI.
+
+**Startup** (backend + simulator already running via `make dev`):
+
+```bash
+npm install --prefix frontend
+npm run dev --prefix frontend
+```
+
+Open **http://127.0.0.1:5173**. Vite proxies same-origin `/api` to the backend (`127.0.0.1:8000`).
+
+**Credentials (local wiring only):**
+
+| Secret | Browser? | How |
+| --- | --- | --- |
+| `OPERATOR_TOKEN` (root `.env`) | **No** | Vite proxy can attach it **server-side** on approve/reject paths using **non-`VITE_`** config (decision routes reserved; unused by browse UI). Never embed in frontend assets. |
+| `SIMULATOR_SERVICE_TOKEN` | **No** | Backend→simulator only. UI must not call the simulator. |
+| `OPENROUTER_API_KEY` | **No** | Backend live runs only. |
+
+**Browse workflow:** open case list (status + pending-review / needs-execution flags) → select a case → brief summary (`case_id`, status, symptom). No paid model calls on this path.
+
+**Gates when touching frontend:** `npm run build --prefix frontend` in addition to existing Python offline gates.
+
 ## Usage
 
 With both services running (`make dev`):
@@ -148,7 +180,7 @@ Fixtures: 20 cases (`CASE-001` … `CASE-020`), 57 documents, 46 events in `fixt
 | ------------------------------------------------ | ------------------------------------------------------------------------------------- |
 | `make sync`                                      | `uv sync --frozen --all-extras`                                                       |
 | `make provision-local-auth`                      | `uv run python scripts/provision_local_auth.py --write`                               |
-| `make dev`                                       | Two-process launcher + `/health` readiness                                            |
+| `make dev`                                       | Two-process launcher + `/health` readiness (backend + simulator; UI is separate npm)  |
 | `make seed`                                      | Non-destructive seed                                                                  |
 | `make reset-demo`                                | Destructive reseed (`--reset`)                                                        |
 | `make test`                                      | `uv run pytest` (deterministic; no paid model calls)                                  |
@@ -234,6 +266,7 @@ make sync       # uv sync --frozen --all-extras (lock-consistent env)
 make lint       # ruff check + ruff format --check on src tests scripts
 make typecheck  # mypy (strict)
 make test       # pytest (deterministic; no paid model calls)
+npm run build --prefix frontend   # operator UI typecheck/bundle (when changing frontend)
 ```
 
 These offline gates never touch OpenRouter. Live `make eval` is a separate explicit opt-in.
@@ -246,8 +279,9 @@ These offline gates never touch OpenRouter. Live `make eval` is a separate expli
 - stdlib `sqlite3`
 - CLI: `casepilot` → `casepilot.cli:main`
 - Eval: `python -m casepilot.evaluation`
+- Operator UI: React + TypeScript + Vite + shadcn/ui under `frontend/` (local browse shell; `/api` proxy)
 - Dev extras: pytest, pytest-asyncio, ruff, mypy
 
 ## Out of scope (deferred)
 
-UI, Docker, LangSmith, cloud deploy, multi-agent design, real insurer integrations, autonomous underwriting/payment decisions.
+Full investigation/history/proposal decision UI (next slice), Docker, production frontend hosting/packaging, cloud deploy, CI, LangSmith, login/RBAC/multi-user auth, multi-agent design, streaming tool traces, full insurance-record browser, bulk/auto retries, custom investigation objectives, real insurer integrations, autonomous underwriting/payment decisions.
