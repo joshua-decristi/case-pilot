@@ -258,6 +258,29 @@ class BackendStore:
             ).fetchall()
         return [self._row_to_proposal(r) for r in rows]
 
+    def case_action_flags(self) -> dict[str, tuple[bool, bool]]:
+        """One-pass aggregate: case_id -> (pending_review, needs_execution).
+
+        Flags are independent: pending vs approved/execution_failed.
+        """
+        pending = ProposalStatus.PENDING.value
+        needs = (ProposalStatus.APPROVED.value, ProposalStatus.EXECUTION_FAILED.value)
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT case_id,
+                       MAX(CASE WHEN status = ? THEN 1 ELSE 0 END) AS pending_review,
+                       MAX(CASE WHEN status IN (?, ?) THEN 1 ELSE 0 END) AS needs_execution
+                FROM proposals
+                GROUP BY case_id
+                """,
+                (pending, needs[0], needs[1]),
+            ).fetchall()
+        return {
+            row["case_id"]: (bool(row["pending_review"]), bool(row["needs_execution"]))
+            for row in rows
+        }
+
     def _row_to_proposal(self, row: sqlite3.Row) -> Proposal:
         return Proposal(
             proposal_id=row["proposal_id"],

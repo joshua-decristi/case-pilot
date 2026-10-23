@@ -55,7 +55,7 @@ class ProposalStatus(StrEnum):
 
 
 class CaseRecord(BaseModel):
-    """GET /v1/cases/{case_id}"""
+    """GET /v1/cases/{case_id} (simulator full record)."""
 
     case_id: str
     status: str
@@ -64,6 +64,24 @@ class CaseRecord(BaseModel):
     required_documents: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime | None = None
+
+
+class CaseSummary(BaseModel):
+    """GET /v1/cases/{case_id} (backend operator summary)."""
+
+    case_id: str
+    status: str
+    symptom: str
+
+
+class CaseListItem(BaseModel):
+    """Item in GET /v1/cases (backend)."""
+
+    case_id: str
+    status: str
+    symptom: str
+    pending_review: bool
+    needs_execution: bool
 
 
 class DocumentRecord(BaseModel):
@@ -218,6 +236,7 @@ class SimulatorRoutes:
     """Enterprise simulator HTTP paths under /v1."""
 
     HEALTH = "/health"
+    CASES = "/v1/cases"
     CASE = "/v1/cases/{case_id}"
     DOCUMENTS = "/v1/cases/{case_id}/documents"
     EVENTS = "/v1/cases/{case_id}/events"
@@ -230,6 +249,9 @@ class BackendRoutes:
     HEALTH = "/health"
     INVESTIGATIONS = "/v1/investigations"
     RUN = "/v1/investigations/{run_id}"
+    CASES = "/v1/cases"
+    CASE = "/v1/cases/{case_id}"
+    CASE_PROPOSALS = "/v1/cases/{case_id}/proposals"
     PROPOSAL = "/v1/proposals/{proposal_id}"
     APPROVE = "/v1/proposals/{proposal_id}/approve"
     REJECT = "/v1/proposals/{proposal_id}/reject"

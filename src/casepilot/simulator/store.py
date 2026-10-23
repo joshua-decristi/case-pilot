@@ -50,6 +50,10 @@ class SimulatorStore:
         ).fetchone()
         return row is not None
 
+    def list_cases(self) -> list[CaseRecord]:
+        rows = self._conn.execute("SELECT * FROM cases ORDER BY case_id").fetchall()
+        return [self._row_to_case(row) for row in rows]
+
     def get_case(self, case_id: str) -> CaseRecord | None:
         row = self._conn.execute(
             "SELECT * FROM cases WHERE case_id = ?",
@@ -57,6 +61,10 @@ class SimulatorStore:
         ).fetchone()
         if row is None:
             return None
+        return self._row_to_case(row)
+
+    @staticmethod
+    def _row_to_case(row: sqlite3.Row) -> CaseRecord:
         return CaseRecord(
             case_id=row["case_id"],
             status=row["status"],

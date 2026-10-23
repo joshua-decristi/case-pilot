@@ -4,7 +4,9 @@ from casepilot.shared.config import Settings, get_settings
 from casepilot.shared.contracts import (
     ApproveProposalRequest,
     BackendRoutes,
+    CaseListItem,
     CaseRecord,
+    CaseSummary,
     CreateFollowUpTaskRequest,
     CreateFollowUpTaskResponse,
     Diagnosis,
@@ -30,7 +32,9 @@ from casepilot.shared.contracts import (
 __all__ = [
     "ApproveProposalRequest",
     "BackendRoutes",
+    "CaseListItem",
     "CaseRecord",
+    "CaseSummary",
     "CreateFollowUpTaskRequest",
     "CreateFollowUpTaskResponse",
     "Diagnosis",

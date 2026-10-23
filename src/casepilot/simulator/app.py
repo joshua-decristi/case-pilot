@@ -70,6 +70,10 @@ def create_app(
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    @application.get(SimulatorRoutes.CASES, response_model=list[CaseRecord])
+    def list_cases(store: StoreDep, _auth: AuthDep) -> list[CaseRecord]:
+        return store.list_cases()
+
     @application.get(SimulatorRoutes.CASE, response_model=CaseRecord)
     def get_case(case_id: str, store: StoreDep, _auth: AuthDep) -> CaseRecord:
         record = store.get_case(case_id)

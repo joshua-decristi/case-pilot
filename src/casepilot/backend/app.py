@@ -26,6 +26,8 @@ from casepilot.shared.config import Settings, get_settings
 from casepilot.shared.contracts import (
     ApproveProposalRequest,
     BackendRoutes,
+    CaseListItem,
+    CaseSummary,
     CreateFollowUpTaskRequest,
     NextAction,
     Proposal,
@@ -37,8 +39,8 @@ from casepilot.shared.contracts import (
     StartInvestigationResponse,
 )
 
-# Discoverability path (not yet on shared BackendRoutes; stable local contract).
-CASE_PROPOSALS = "/v1/cases/{case_id}/proposals"
+# Backward-compatible alias for callers/tests that imported the local constant.
+CASE_PROPOSALS = BackendRoutes.CASE_PROPOSALS
 
 
 @dataclass
@@ -192,9 +194,44 @@ def create_app(
             raise HTTPException(status_code=404, detail="proposal not found")
         return prop
 
+    @app.get(BackendRoutes.CASES, response_model=list[CaseListItem])
+    async def list_cases(request: Request) -> list[CaseListItem]:
+        backend = _backend(request)
+        try:
+            cases = await backend.client.list_cases()
+        except SimulatorError as exc:
+            raise HTTPException(
+                status_code=exc.status_code or 502,
+                detail=str(exc),
+            ) from exc
+        flags = backend.store.case_action_flags()
+        return [
+            CaseListItem(
+                case_id=case.case_id,
+                status=case.status,
+                symptom=case.symptom,
+                pending_review=flags.get(case.case_id, (False, False))[0],
+                needs_execution=flags.get(case.case_id, (False, False))[1],
+            )
+            for case in cases
+        ]
+
+    @app.get(BackendRoutes.CASE, response_model=CaseSummary)
+    async def get_case(case_id: str, request: Request) -> CaseSummary:
+        try:
+            case = await _backend(request).client.get_case(case_id)
+        except SimulatorError as exc:
+            if exc.status_code == 404:
+                raise HTTPException(status_code=404, detail=f"case not found: {case_id}") from exc
+            raise HTTPException(
+                status_code=exc.status_code or 502,
+                detail=str(exc),
+            ) from exc
+        return CaseSummary(case_id=case.case_id, status=case.status, symptom=case.symptom)
+
     @app.get(CASE_PROPOSALS, response_model=list[Proposal])
     async def list_case_proposals(case_id: str, request: Request) -> list[Proposal]:
-        """Discover proposals for a case (local contract; not yet on BackendRoutes)."""
+        """Discover proposals for a case."""
         return _backend(request).store.list_proposals_for_case(case_id)
 
     @app.post(BackendRoutes.APPROVE, response_model=ProposalDecisionResponse)

@@ -70,6 +70,12 @@ class SimulatorClient:
                 raise SimulatorError(f"simulator transport error: {exc}") from exc
         raise SimulatorError(f"simulator transport error: {last_exc}")
 
+    async def list_cases(self) -> list[CaseRecord]:
+        data = await self._get(SimulatorRoutes.CASES)
+        if not isinstance(data, list):
+            raise SimulatorError("simulator list_cases: expected array response")
+        return [CaseRecord.model_validate(item) for item in data]
+
     async def get_case(self, case_id: str) -> CaseRecord:
         data = await self._get(SimulatorRoutes.CASE.format(case_id=case_id))
         return CaseRecord.model_validate(data)

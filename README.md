@@ -4,7 +4,7 @@ Local portfolio demo: an agent investigates **synthetic** stalled insurance case
 
 This is an **independent synthetic demonstration**. It is not a product of any insurer, does not use real customer data, and does not model any insurer’s internal systems, workflows, or requirements.
 
-**Stage:** CLI + HTTP APIs only. **No UI. No Docker.** Repository git metadata may be absent (`git_revision: unavailable` in reports until `git init`).
+**Stage:** CLI + HTTP APIs only (including backend case list/summary). **No UI. No Docker.** Repository git metadata may be absent (`git_revision: unavailable` in reports until `git init`).
 
 Architecture sketch: [`docs/architecture.md`](docs/architecture.md). Sanitized sample live report: [`docs/sample-evaluation.json`](docs/sample-evaluation.json).
 
@@ -41,10 +41,23 @@ Enterprise simulator
 SQLite enterprise records + follow-up tasks
 ```
 
-- **Simulator** (`casepilot.simulator.app`, default `127.0.0.1:8001`): seeded synthetic cases, documents, processing events; service-token auth; owns `SIMULATOR_DB_PATH`.
-- **Backend** (`casepilot.backend.app`, default `127.0.0.1:8000`): investigation orchestration, proposals/approvals, run storage, JSONL traces, **global live-cost ledger**; operator-token auth for approve/reject; owns `BACKEND_DB_PATH` and `TRACE_DIR`.
+- **Simulator** (`casepilot.simulator.app`, default `127.0.0.1:8001`): seeded synthetic cases (**list + get**), documents, processing events; service-token auth; owns `SIMULATOR_DB_PATH`.
+- **Backend** (`casepilot.backend.app`, default `127.0.0.1:8000`): investigation orchestration, proposals/approvals, run storage, **case list/summary with action flags**, JSONL traces, **global live-cost ledger**; operator-token auth for approve/reject; owns `BACKEND_DB_PATH` and `TRACE_DIR`.
 
 Services bind loopback only. The backend never reads the simulator DB directly (and vice versa).
+
+### Case browsing APIs (backend + simulator)
+
+HTTP-only operator discoverability — **no UI in this change**.
+
+| Method | Path | Auth | Returns |
+| --- | --- | --- | --- |
+| `GET` | `/v1/cases` (simulator) | service token | full `CaseRecord` list |
+| `GET` | `/v1/cases` (backend) | none (loopback) | `CaseListItem[]` — `case_id`, `status`, `symptom`, plus independent flags `pending_review` / `needs_execution` from proposal state |
+| `GET` | `/v1/cases/{case_id}` (backend) | none (loopback) | `CaseSummary` — brief `case_id` / `status` / `symptom` (not the full simulator record) |
+
+Backend list aggregates action flags from persisted proposals in one pass (`pending` → pending review; `approved` or `execution_failed` → needs execution). Existing investigation / proposal / approve-reject routes are unchanged. Shared `BackendRoutes.CASE_PROPOSALS` documents the case proposals path.
+
 
 ## Requirements
 

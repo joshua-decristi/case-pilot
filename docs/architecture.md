@@ -1,6 +1,6 @@
 # CasePilot architecture
 
-Independent local portfolio demo. CLI/API only — **no UI, no Docker**. Git history may be uninitialized in a fresh tree (`git_revision: unavailable` in reports).
+Independent local portfolio demo. CLI/API only — **no UI, no Docker**. Case list/summary HTTP APIs added for operator discoverability. Git history may be uninitialized in a fresh tree (`git_revision: unavailable` in reports).
 
 ## Runtime topology
 
@@ -34,6 +34,14 @@ flowchart LR
 - Model tools: case-bound reads only; writes require stored proposal + operator approve.
 - Evidence citations validated against retrievals for that run (ID + `retrieval_ref`, not semantic proof).
 - Live spend: application **$5** envelope, **`z-ai/glm-5.3-flash` only**; not a provider hard cap.
+
+## Case browsing APIs
+
+- Simulator `GET /v1/cases` (service token): full case records.
+- Backend `GET /v1/cases`: list with independent `pending_review` / `needs_execution` proposal flags.
+- Backend `GET /v1/cases/{case_id}`: brief operator `CaseSummary` (not full simulator record).
+
+No operator UI yet.
 
 ## Deferred
 
