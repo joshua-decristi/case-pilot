@@ -4,19 +4,20 @@ Local portfolio demo: an agent investigates **synthetic** stalled insurance case
 
 This is an **independent synthetic demonstration**. It is not a product of any insurer, does not use real customer data, and does not model any insurer’s internal systems, workflows, or requirements.
 
-**Stage:** CLI + HTTP APIs, plus a **local-only operator UI** for **case browsing** (list + brief summary). Investigation/history/proposal decision UI not in this slice. **No Docker. No production hosting.** Repository git metadata may be absent (`git_revision: unavailable` in reports until `git init`).
+**Stage:** CLI + HTTP APIs, plus a **local-only operator UI** (React/Vite) over the same workflow. **No Docker. No production hosting.** Repository git metadata may be absent (`git_revision: unavailable` in reports until `git init`).
 
-Architecture sketch: [`docs/architecture.md`](docs/architecture.md). Sanitized sample live report: [`docs/sample-evaluation.json`](docs/sample-evaluation.json).
+Architecture sketch: [`docs/architecture.md`](docs/architecture.md). Sanitized sample live report: [`docs/sample-evaluation.json`](docs/sample-evaluation.json). Operator UI scope: [`.agent/operator-ui/spec.md`](.agent/operator-ui/spec.md) (local agent notes; may be absent from some checkouts).
 
 ## Results snapshot (honest)
 
 | Gate                | Result                                                                                                                                                                                                                                                |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Offline quality     | **103** pytest cases collected (functionality-focused consolidation from **117** — three negative parameterization cases plus one independent metadata-gap/backend-regression e2e case — no paid reruns); local gates green: Ruff check + format, mypy, pytest (**no paid calls**)                         |
+| Offline quality     | **103** pytest cases collected (functionality-focused consolidation from **117** — three negative parameterization cases plus one independent metadata-gap/backend-regression e2e case — no paid reruns); local gates green: Ruff check + format, mypy, pytest (**no paid calls**); operator-UI **frontend build** + reviews also passed                         |
 | Live smoke (latest) | **CASE-001** run `82e71af3-2bfa-4145-9b51-8afa58644fc4`: **status `completed`**, diagnosis **`missing_document`**, **5** grounded evidence rows, next_action **`request_missing_document`**, ledger settle **`$0.00169768`** (GLM-only, cost-guarded) |
 | Live smoke history  | Attempt 1 failed (async `wrap_model_call`); attempt 2 `indeterminate` / `escalate_to_human` (evidence validation) — retained as history only, not the headline                                                                                        |
 | Held-out live eval  | **N=8** (`evaluation` split): category **7/8**, evidence IDs **7/8**, action **6/8**, uncertainty **1/1**, hard fails **0/8** (unchanged)                                                                                                             |
-| Ledger snapshot     | Cumulative spent **~$0.01718** USD (`evals/reports/cost_ledger.json` at report time) — **snapshot, not a promised unit cost**                                                                                                                         |
+| Operator UI manual  | Checklist **verified** except execution recovery/retry (**unavailable** — no `approved`-unfinished / `execution_failed` state). Incl. **5** authorized live Investigates + offline loading/duplicate-guard/network-error checks (**no further paid calls**). Spec **not** fully validated while recovery remains unobserved. |
+| Ledger snapshot     | Cumulative **`$0.02582926`** USD (`evals/reports/cost_ledger.json`); prior baseline **`$0.01718485`**; operator-UI manual work **`$0.00864441`** (**5** live investigates) — **snapshot, not a promised unit cost**                                                                                                                         |
 
 **Do not over-read these numbers:**
 
@@ -32,7 +33,7 @@ Primary artifacts: `evals/reports/live-smoke.json` (CASE-001 attempt **3** headl
 ## What it does
 
 ```text
-CLI (casepilot)  or  Operator UI browse (Vite :5173 → /api proxy)
+CLI (casepilot)  or  Operator UI (Vite :5173 → /api proxy)
     | HTTP (loopback)
 Investigation backend  -- LangChain agent -- OpenRouter (live runs only)
     | cost ledger (backend sole mutator) + authenticated HTTP
@@ -41,32 +42,18 @@ Enterprise simulator
 SQLite enterprise records + follow-up tasks
 ```
 
-- **Simulator** (`casepilot.simulator.app`, default `127.0.0.1:8001`): seeded synthetic cases (**list + get**), documents, processing events; service-token auth; owns `SIMULATOR_DB_PATH`.
-- **Backend** (`casepilot.backend.app`, default `127.0.0.1:8000`): investigation orchestration, proposals/approvals, run storage, **case list/summary with action flags**, **per-case run history**, JSONL traces, **global live-cost ledger**; operator-token auth for approve/reject; owns `BACKEND_DB_PATH` and `TRACE_DIR`.
-- **Operator UI** (`frontend/`, Vite default `http://127.0.0.1:5173`): **browsing only** in this slice — case list + brief summary on select. Same-origin `/api` via Vite dev proxy — **not** a production host. Investigate / history / proposal controls come later.
+- **Simulator** (`casepilot.simulator.app`, default `127.0.0.1:8001`): seeded synthetic cases, documents, processing events; service-token auth; owns `SIMULATOR_DB_PATH`.
+- **Backend** (`casepilot.backend.app`, default `127.0.0.1:8000`): investigation orchestration, proposals/approvals, run storage, JSONL traces, **global live-cost ledger**; operator-token auth for approve/reject; owns `BACKEND_DB_PATH` and `TRACE_DIR`.
+- **Operator UI** (`frontend/`, Vite default `http://127.0.0.1:5173`): single-operator local shell for cases, findings, evidence, proposals, and approve/reject/retry. Same-origin `/api` via the Vite dev proxy — **not** a production host.
 
 Services bind loopback only. The backend never reads the simulator DB directly (and vice versa). The browser never talks to the simulator and never receives `SIMULATOR_SERVICE_TOKEN`.
-
-### Case browsing APIs (backend + simulator)
-
-HTTP-only operator discoverability — **no UI in this change**.
-
-| Method | Path | Auth | Returns |
-| --- | --- | --- | --- |
-| `GET` | `/v1/cases` (simulator) | service token | full `CaseRecord` list |
-| `GET` | `/v1/cases` (backend) | none (loopback) | `CaseListItem[]` — `case_id`, `status`, `symptom`, plus independent flags `pending_review` / `needs_execution` from proposal state |
-| `GET` | `/v1/cases/{case_id}` (backend) | none (loopback) | `CaseSummary` — brief `case_id` / `status` / `symptom` (not the full simulator record) |
-| `GET` | `/v1/cases/{case_id}/runs` (backend) | none (loopback) | `RunSummary[]` — persisted investigation history for the case, newest first (`run_id`, `status`, timestamps). 404 if case missing in simulator |
-
-Backend list aggregates action flags from persisted proposals in one pass (`pending` → pending review; `approved` or `execution_failed` → needs execution). Run history reads backend SQLite only after a simulator case existence check. Existing investigation / proposal / approve-reject routes are unchanged. Shared `BackendRoutes.CASE_PROPOSALS` / `CASE_RUNS` document case-scoped paths.
-
 
 ## Requirements
 
 - **Python 3.14** (pinned in `.python-version`)
 - **[uv](https://docs.astral.sh/uv/)** for install and runs
 - **Node.js + npm** only if you run the operator UI (`frontend/`)
-- OpenRouter API key **only** for live investigations / live eval (not required for lint, typecheck, offline eval, default pytest, or UI case browsing)
+- OpenRouter API key **only** for live investigations / live eval (not required for lint, typecheck, offline eval, default pytest, or UI chrome without Investigate)
 
 ## Setup
 
@@ -78,7 +65,7 @@ make sync                   # uv sync --frozen --all-extras
 make seed                   # non-destructive fixture load (refuses non-empty simulator DB)
 make dev                    # start simulator + backend; wait on /health
 
-# Operator UI browse (separate process; needs make dev already up)
+# Operator UI (separate process; needs make dev already up)
 npm install --prefix frontend
 npm run dev --prefix frontend   # http://127.0.0.1:5173
 ```
@@ -120,10 +107,9 @@ Optional: `CASEPILOT_COST_LEDGER_PATH` overrides the live cost ledger path (defa
 
 Do not commit `.env`, databases, traces, or generated eval reports (sanitized sample under `docs/` is intentional).
 
+### Operator UI (local)
 
-### Operator UI (local browse)
-
-Local-first **case list + brief summary** shell over backend case APIs. **Not** production-hosted. This slice does **not** include Investigate, run history panel, findings, or approve/reject UI.
+Local-first visual shell over the existing investigation + human-approval workflow. **Not** production-hosted; packaging/deploy are out of scope.
 
 **Startup** (backend + simulator already running via `make dev`):
 
@@ -132,19 +118,53 @@ npm install --prefix frontend
 npm run dev --prefix frontend
 ```
 
-Open **http://127.0.0.1:5173**. Vite proxies same-origin `/api` to the backend (`127.0.0.1:8000`).
+Open **http://127.0.0.1:5173**. The Vite dev server proxies same-origin `/api` to the backend (`127.0.0.1:8000`).
 
 **Credentials (local wiring only):**
 
 | Secret | Browser? | How |
 | --- | --- | --- |
-| `OPERATOR_TOKEN` (root `.env`) | **No** | Vite proxy can attach it **server-side** on approve/reject paths using **non-`VITE_`** config (decision routes reserved; unused by browse UI). Never embed in frontend assets. |
-| `SIMULATOR_SERVICE_TOKEN` | **No** | Backend→simulator only. UI must not call the simulator. |
+| `OPERATOR_TOKEN` (root `.env`) | **No** | Vite proxy attaches it **server-side** to approve/reject requests using **non-`VITE_`** config. Never embed in frontend assets or commit it. |
+| `SIMULATOR_SERVICE_TOKEN` | **No** | Backend→simulator only. UI must not call the simulator or receive this credential. |
 | `OPENROUTER_API_KEY` | **No** | Backend live runs only. |
 
-**Browse workflow:** open case list (status + pending-review / needs-execution flags) → select a case → brief summary (`case_id`, status, symptom). No paid model calls on this path.
+This preserves the existing operator-token gate. It is **not** a login system, multi-user auth, or a claim of production browser security.
 
-**Gates when touching frontend:** `npm run build --prefix frontend` in addition to existing Python offline gates.
+**Paid model calls:** Investigate hits the real backend investigation path. Do **not** click Investigate / run live evals without **explicit** permission and a configured key + ledger headroom. UI chrome (list/detail/history of already-persisted data) does not need OpenRouter.
+
+#### Screens and workflow (exact scope)
+
+1. **Case list** — seeded cases + status; flags **pending review** vs **approved-but-unfinished / execution failed** separately. No charts, metrics, or global recovery dashboard.
+2. **Case detail** — brief summary; **Investigate** with the **default objective only** (no editable objective); latest persisted run; small **history** of earlier runs; unfinished proposals remain visible across runs.
+3. **Findings (one page)** — diagnosis/explanation, cited evidence (facts + source/record/field refs), uncertainty, recommended next action, and exact proposed task when present. A result **without** a proposal stays useful (findings only; no approval controls). Evidence lives with findings — **no** document/event/task record browser.
+4. **Proposal review** — show the **exact persisted** task payload (title, body, case) + status.
+   - **Pending:** **Approve & execute** (immediate, no confirm dialog) or **Reject** (optional inline reason). Disable conflicting controls while a request runs.
+   - **Approved unfinished / execution_failed:** show error details; **Retry execution** via the existing approval endpoint + stored payload. **No reject after approval.**
+   - **Executed / rejected:** terminal outcome only; show rejection reason or execution error only as applicable — do not mislabel rejection as execution failure.
+5. **Loading / errors / history** — synchronous REST; show **Investigating…** until complete (no streaming, tool feed, or fake progress). Block duplicate Investigate while in flight **in the mounted UI only** (not cross-tab/job infra). Inline request failures; keep earlier results if a new run fails. History reopens **persisted** runs/proposals; page reload refetches persisted state. Distinguish network/request errors from confirmed execution failure; refetch before claiming failure. **No** automatic execution or automatic retries.
+
+#### Manual verification checklist
+
+Manual only — **no new automated UI tests** in this workstream. Against a running backend + simulator. Status after authorized manual pass (**5** live Investigate calls; ledger delta **`$0.00864441`**):
+
+| Item | Status |
+| --- | --- |
+| Open case list and select a case without the CLI | **Verified** |
+| See summary; start default investigation | **Verified** (5 live calls) |
+| Evidence, uncertainty, recommended action, exact proposed task on one page | **Verified** |
+| Approve → persisted **executed** outcome | **Verified** |
+| Reject pending proposal **with** a reason | **Verified** |
+| Reject pending proposal **without** a reason | **Verified** |
+| Reopen earlier investigations; earlier **pending** proposal preserved across a later run | **Verified** |
+| Reload pages; recover persisted history and **current** proposal statuses | **Verified** |
+| Local startup; CSRF / no service or operator credentials in frontend assets | **Verified** |
+| Honest **Investigating…** (controls disabled); in-mounted-UI duplicate Investigate guard (two clicks → one request via pending `fetch` intercept) | **Verified** (ephemeral browser; **no paid calls**) |
+| Manual network failure on Investigate → inline error; prior findings preserved; reload clean | **Verified** (forced failure; **no paid calls**) |
+| Failed/interrupted execution → explicit **Retry** via existing backend behavior | **Unavailable / not verified** — no `approved`-unfinished or `execution_failed` state observed; do **not** claim coverage |
+
+**Automated gates (separate from manual UI checklist):** **103** pytest + Ruff lint/format + mypy + frontend build; reviews passed.
+
+**Overall:** operator-UI spec is **not fully validated** solely because execution recovery/retry was **unavailable** to observe. Ledger unchanged this pass. Further paid Investigate/eval calls still require **explicit** authorization.
 
 ## Usage
 
@@ -202,7 +222,7 @@ Application policy — **not** a provider hard cap:
 
 Conservative per-run reserves use local price tables × token ceilings × `max_model_turns` — bounds for guarding, not a quote.
 
-Reported cumulative spend **~$0.01718** is one ledger snapshot after smoke + eval activity — not a guaranteed cost per case.
+Reported cumulative spend **`$0.02582926`** (baseline **`$0.01718485`** before operator-UI manual investigates; this-work delta **`$0.00864441`**) is a ledger snapshot — not a guaranteed cost per case.
 
 ## Evaluation
 
@@ -269,7 +289,7 @@ make test       # pytest (deterministic; no paid model calls)
 npm run build --prefix frontend   # operator UI typecheck/bundle (when changing frontend)
 ```
 
-These offline gates never touch OpenRouter. Live `make eval` is a separate explicit opt-in.
+These offline gates never touch OpenRouter. Live `make eval` / UI Investigate are separate explicit opt-ins.
 
 ## Stack (actual)
 
@@ -279,9 +299,9 @@ These offline gates never touch OpenRouter. Live `make eval` is a separate expli
 - stdlib `sqlite3`
 - CLI: `casepilot` → `casepilot.cli:main`
 - Eval: `python -m casepilot.evaluation`
-- Operator UI: React + TypeScript + Vite + shadcn/ui under `frontend/` (local browse shell; `/api` proxy)
+- Operator UI: React + TypeScript + Vite + shadcn/ui under `frontend/` (local dev only; `/api` proxy)
 - Dev extras: pytest, pytest-asyncio, ruff, mypy
 
 ## Out of scope (deferred)
 
-Full investigation/history/proposal decision UI (next slice), Docker, production frontend hosting/packaging, cloud deploy, CI, LangSmith, login/RBAC/multi-user auth, multi-agent design, streaming tool traces, full insurance-record browser, bulk/auto retries, custom investigation objectives, real insurer integrations, autonomous underwriting/payment decisions.
+Docker, production frontend hosting/packaging, cloud deploy, CI, LangSmith, login/RBAC/multi-user auth, multi-agent design, streaming tool traces, full insurance-record browser, bulk/auto retries, custom investigation objectives, real insurer integrations, autonomous underwriting/payment decisions.

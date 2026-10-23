@@ -1,6 +1,22 @@
-import type { CaseListItem, CaseSummary } from "./types";
+import type {
+  CaseListItem,
+  CaseSummary,
+  InvestigationResponse,
+  Proposal,
+  ProposalDecisionResponse,
+  RunRecord,
+  RunSummary,
+} from "./types";
+
+/** CLI default objective — not exposed as an editable UI field. */
+const DEFAULT_OBJECTIVE =
+  "Investigate why this case is stalled and recommend the next action.";
 
 const API_PREFIX = "/api";
+
+/** Non-simple header: forces CORS preflight; required by Vite proxy on decisions. */
+const OPERATOR_CSRF_HEADER = "X-Casepilot-Operator";
+const OPERATOR_CSRF_VALUE = "1";
 
 export class ApiError extends Error {
   readonly status: number | undefined;
@@ -78,4 +94,56 @@ export function getCases(): Promise<CaseListItem[]> {
 
 export function getCase(id: string): Promise<CaseSummary> {
   return request<CaseSummary>(`/v1/cases/${encodeURIComponent(id)}`);
+}
+
+export function getHistory(id: string): Promise<RunSummary[]> {
+  return request<RunSummary[]>(
+    `/v1/cases/${encodeURIComponent(id)}/runs`,
+  );
+}
+
+export function getRun(id: string): Promise<RunRecord> {
+  return request<RunRecord>(`/v1/investigations/${encodeURIComponent(id)}`);
+}
+
+export function getProposal(id: string): Promise<Proposal> {
+  return request<Proposal>(`/v1/proposals/${encodeURIComponent(id)}`);
+}
+
+export function getCaseProposals(id: string): Promise<Proposal[]> {
+  return request<Proposal[]>(
+    `/v1/cases/${encodeURIComponent(id)}/proposals`,
+  );
+}
+
+export function investigate(id: string): Promise<InvestigationResponse> {
+  return request<InvestigationResponse>("/v1/investigations", {
+    method: "POST",
+    body: JSON.stringify({ case_id: id, objective: DEFAULT_OBJECTIVE }),
+  });
+}
+
+export function approve(id: string): Promise<ProposalDecisionResponse> {
+  return request<ProposalDecisionResponse>(
+    `/v1/proposals/${encodeURIComponent(id)}/approve`,
+    {
+      method: "POST",
+      body: JSON.stringify({}),
+      headers: { [OPERATOR_CSRF_HEADER]: OPERATOR_CSRF_VALUE },
+    },
+  );
+}
+
+export function reject(
+  id: string,
+  reason?: string,
+): Promise<ProposalDecisionResponse> {
+  return request<ProposalDecisionResponse>(
+    `/v1/proposals/${encodeURIComponent(id)}/reject`,
+    {
+      method: "POST",
+      body: JSON.stringify(reason ? { reason } : {}),
+      headers: { [OPERATOR_CSRF_HEADER]: OPERATOR_CSRF_VALUE },
+    },
+  );
 }
