@@ -9,7 +9,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -47,6 +47,26 @@ class ProposalStatus(StrEnum):
     APPROVED = "approved"
     EXECUTED = "executed"
     EXECUTION_FAILED = "execution_failed"
+
+
+class TurnStatus(StrEnum):
+    """Conversation turn/attempt lifecycle: pending → succeeded | failed."""
+
+    PENDING = "pending"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class EvidenceProvenance(StrEnum):
+    """Whether a snapshot was captured during the original investigation or later."""
+
+    ORIGINAL_RUN = "original_run"
+    FOLLOW_UP = "follow_up"
+
+
+class InterpretationKind(StrEnum):
+    INFERENCE = "inference"
+    UNCERTAINTY = "uncertainty"
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +259,131 @@ class ProposalDecisionResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Run-scoped follow-up conversation
+# ---------------------------------------------------------------------------
+
+
+class EvidenceSnapshot(BaseModel):
+    """Server-owned retrieved field value used for grounded citations."""
+
+    snapshot_id: str
+    run_id: str
+    attempt_id: str | None = None
+    source_system: str
+    record_id: str
+    field_path: str
+    value: Any
+    retrieval_ref: str
+    retrieved_at: datetime
+    provenance: EvidenceProvenance
+
+
+class SourceFactClaim(BaseModel):
+    """Model-emitted citation of a server snapshot (no trusted value/metadata)."""
+
+    local_id: str = Field(max_length=64)
+    snapshot_id: str
+    field_path: str = Field(max_length=500)
+
+
+class RenderedSourceFact(BaseModel):
+    """Server-rendered source fact; values/provenance come only from snapshots."""
+
+    local_id: str
+    snapshot_id: str
+    source_system: str
+    record_id: str
+    field_path: str
+    value: Any
+    retrieval_ref: str
+    retrieved_at: datetime
+    provenance: EvidenceProvenance
+
+
+class InterpretationBlock(BaseModel):
+    """Labeled inference/uncertainty; must cite source-fact local_ids when factual."""
+
+    text: str = Field(max_length=4000)
+    cites: list[str] = Field(default_factory=list)
+    kind: InterpretationKind
+
+
+class FollowUpAgentOutput(BaseModel):
+    """Structured follow-up model output before server rendering/validation."""
+
+    source_facts: list[SourceFactClaim] = Field(default_factory=list)
+    interpretations: list[InterpretationBlock] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class FollowUpAnswer(BaseModel):
+    """Persisted/operator-visible follow-up answer after server grounding."""
+
+    source_facts: list[RenderedSourceFact] = Field(default_factory=list)
+    interpretations: list[InterpretationBlock] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class ConversationAttempt(BaseModel):
+    attempt_id: str
+    turn_id: str
+    request_key: str
+    previous_attempt_id: str | None = None
+    status: TurnStatus
+    answer: FollowUpAnswer | None = None
+    error: str | None = None
+    created_at: datetime
+    completed_at: datetime | None = None
+
+
+class ConversationTurn(BaseModel):
+    turn_id: str
+    run_id: str
+    question: str
+    status: TurnStatus
+    created_at: datetime
+    updated_at: datetime
+    attempts: list[ConversationAttempt] = Field(default_factory=list)
+
+
+class ConversationHistoryResponse(BaseModel):
+    """GET /v1/investigations/{run_id}/conversation"""
+
+    run_id: str
+    turns: list[ConversationTurn] = Field(default_factory=list)
+
+
+class SendMessageRequest(BaseModel):
+    """POST /v1/investigations/{run_id}/conversation/messages"""
+
+    question: str = Field(max_length=4000)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+    @field_validator("question")
+    @classmethod
+    def question_not_blank(cls, value: str) -> str:
+        question = value.strip()
+        if not question:
+            raise ValueError("question must not be empty or whitespace-only")
+        return question
+
+
+class RetryTurnRequest(BaseModel):
+    """POST .../conversation/turns/{turn_id}/retry"""
+
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    expected_previous_attempt_id: str
+
+
+class ConversationTurnResponse(BaseModel):
+    """Send/retry response body."""
+
+    turn: ConversationTurn
+    attempt: ConversationAttempt
+    created: bool = True
+
+
+# ---------------------------------------------------------------------------
 # Documented route paths (format with .format(case_id=..., run_id=..., ...))
 # ---------------------------------------------------------------------------
 
@@ -267,3 +412,6 @@ class BackendRoutes:
     PROPOSAL = "/v1/proposals/{proposal_id}"
     APPROVE = "/v1/proposals/{proposal_id}/approve"
     REJECT = "/v1/proposals/{proposal_id}/reject"
+    CONVERSATION = "/v1/investigations/{run_id}/conversation"
+    CONVERSATION_MESSAGES = "/v1/investigations/{run_id}/conversation/messages"
+    CONVERSATION_RETRY = "/v1/investigations/{run_id}/conversation/turns/{turn_id}/retry"

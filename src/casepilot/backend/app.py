@@ -19,7 +19,13 @@ from casepilot.backend.agent import (
     run_investigation,
 )
 from casepilot.backend.client import SimulatorClient, SimulatorError
-from casepilot.backend.db import BackendStore
+from casepilot.backend.db import (
+    BackendStore,
+    ConversationConflict,
+    ConversationIdempotencyError,
+    ConversationNotEligible,
+    ConversationRetryError,
+)
 from casepilot.backend.hooks import (
     TEST_MODE_ENV,
     has_test_hook,
@@ -33,14 +39,20 @@ from casepilot.shared.contracts import (
     BackendRoutes,
     CaseListItem,
     CaseSummary,
+    ConversationAttempt,
+    ConversationHistoryResponse,
+    ConversationTurn,
+    ConversationTurnResponse,
     CreateFollowUpTaskRequest,
     NextAction,
     Proposal,
     ProposalDecisionResponse,
     ProposalStatus,
     RejectProposalRequest,
+    RetryTurnRequest,
     RunRecord,
     RunSummary,
+    SendMessageRequest,
     StartInvestigationRequest,
     StartInvestigationResponse,
 )
@@ -98,6 +110,7 @@ def create_app(
         cfg = settings or get_settings()
         st = store or BackendStore(cfg.backend_db_path)
         cl = client or SimulatorClient(cfg)
+        st.recover_interrupted_attempts()
         backend_state = AppState(
             settings=cfg,
             store=st,
@@ -122,6 +135,7 @@ def create_app(
                 client=cl,
                 model_factory=model_factory or default_model_factory,
             )
+        backend_state.store.recover_interrupted_attempts()
         app.state.backend = backend_state
         try:
             yield
@@ -138,6 +152,54 @@ def create_app(
 
     def _backend(request: Request) -> AppState:
         return request.app.state.backend  # type: ignore[no-any-return]
+
+    def _map_conversation_error(exc: Exception) -> HTTPException:
+        if isinstance(exc, ConversationNotEligible):
+            msg = str(exc)
+            code = 404 if "not found" in msg else 409
+            return HTTPException(status_code=code, detail=msg)
+        if isinstance(exc, ConversationRetryError):
+            msg = str(exc)
+            code = 404 if "not found" in msg else 409
+            return HTTPException(status_code=code, detail=msg)
+        if isinstance(exc, (ConversationConflict, ConversationIdempotencyError)):
+            return HTTPException(status_code=409, detail=str(exc))
+        return HTTPException(status_code=500, detail="internal error")
+
+    def _attempt_from_turn(turn: ConversationTurn, attempt_id: str) -> ConversationAttempt:
+        for att in turn.attempts:
+            if att.attempt_id == attempt_id:
+                return att
+        raise HTTPException(status_code=500, detail="internal error")
+
+    async def _run_created_attempt(
+        backend: AppState,
+        *,
+        run_id: str,
+        turn_id: str,
+        attempt_id: str,
+    ) -> None:
+        # Lazy import: follow-up agent module is owned by a separate slice.
+        from casepilot.backend.followup import run_follow_up
+
+        try:
+            await run_follow_up(
+                run_id=run_id,
+                turn_id=turn_id,
+                attempt_id=attempt_id,
+                store=backend.store,
+                client=backend.client,
+                settings=backend.settings,
+                model_factory=backend.model_factory,
+            )
+        except Exception as exc:
+            backend.store.fail_attempt(attempt_id, error="follow-up failed")
+            TraceWriter(backend.settings.trace_dir, run_id).emit(
+                "follow_up_failed",
+                turn_id=turn_id,
+                attempt_id=attempt_id,
+                error=type(exc).__name__,
+            )
 
     @app.get(BackendRoutes.HEALTH)
     async def health() -> dict[str, str]:
@@ -192,6 +254,90 @@ def create_app(
         if record is None:
             raise HTTPException(status_code=404, detail="run not found")
         return record
+
+    @app.get(BackendRoutes.CONVERSATION, response_model=ConversationHistoryResponse)
+    async def get_conversation(run_id: str, request: Request) -> ConversationHistoryResponse:
+        backend = _backend(request)
+        if backend.store.get_run(run_id) is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return ConversationHistoryResponse(
+            run_id=run_id,
+            turns=backend.store.get_conversation(run_id),
+        )
+
+    @app.post(
+        BackendRoutes.CONVERSATION_MESSAGES,
+        response_model=ConversationTurnResponse,
+    )
+    async def send_conversation_message(
+        run_id: str,
+        body: SendMessageRequest,
+        request: Request,
+    ) -> ConversationTurnResponse:
+        backend = _backend(request)
+        try:
+            started = backend.store.begin_send(
+                run_id=run_id,
+                question=body.question,
+                idempotency_key=body.idempotency_key,
+            )
+        except (
+            ConversationNotEligible,
+            ConversationConflict,
+            ConversationIdempotencyError,
+            ConversationRetryError,
+        ) as exc:
+            raise _map_conversation_error(exc) from exc
+        if started.created:
+            await _run_created_attempt(
+                backend,
+                run_id=run_id,
+                turn_id=started.turn.turn_id,
+                attempt_id=started.attempt.attempt_id,
+            )
+        turn = backend.store.get_turn(started.turn.turn_id)
+        if turn is None:
+            raise HTTPException(status_code=500, detail="internal error")
+        attempt = _attempt_from_turn(turn, started.attempt.attempt_id)
+        return ConversationTurnResponse(turn=turn, attempt=attempt, created=started.created)
+
+    @app.post(
+        BackendRoutes.CONVERSATION_RETRY,
+        response_model=ConversationTurnResponse,
+    )
+    async def retry_conversation_turn(
+        run_id: str,
+        turn_id: str,
+        body: RetryTurnRequest,
+        request: Request,
+    ) -> ConversationTurnResponse:
+        backend = _backend(request)
+        try:
+            started = backend.store.begin_retry(
+                run_id=run_id,
+                turn_id=turn_id,
+                idempotency_key=body.idempotency_key,
+                expected_previous_attempt_id=body.expected_previous_attempt_id,
+            )
+        except (
+            ConversationNotEligible,
+            ConversationConflict,
+            ConversationIdempotencyError,
+            ConversationRetryError,
+        ) as exc:
+            raise _map_conversation_error(exc) from exc
+        if started.created:
+            await _run_created_attempt(
+                backend,
+                run_id=run_id,
+                turn_id=started.turn.turn_id,
+                attempt_id=started.attempt.attempt_id,
+            )
+        turn = backend.store.get_turn(started.turn.turn_id)
+        if turn is None:
+            raise HTTPException(status_code=500, detail="internal error")
+        attempt = _attempt_from_turn(turn, started.attempt.attempt_id)
+        return ConversationTurnResponse(turn=turn, attempt=attempt, created=started.created)
 
     @app.get(BackendRoutes.PROPOSAL, response_model=Proposal)
     async def get_proposal(proposal_id: str, request: Request) -> Proposal:

@@ -104,6 +104,88 @@ export interface Proposal {
   task_id: string | null;
 }
 
+// ---------------------------------------------------------------------------
+// Run-scoped follow-up conversation (mirrors shared/contracts.py)
+// ---------------------------------------------------------------------------
+
+export type TurnStatus = "pending" | "succeeded" | "failed";
+
+export type EvidenceProvenance = "original_run" | "follow_up";
+
+export type InterpretationKind = "inference" | "uncertainty";
+
+/** Server-rendered source fact; values/provenance come only from snapshots. */
+export interface RenderedSourceFact {
+  local_id: string;
+  snapshot_id: string;
+  source_system: string;
+  record_id: string;
+  field_path: string;
+  value: unknown;
+  retrieval_ref: string;
+  retrieved_at: string;
+  provenance: EvidenceProvenance;
+}
+
+export interface InterpretationBlock {
+  text: string;
+  cites: string[];
+  kind: InterpretationKind;
+}
+
+export interface FollowUpAnswer {
+  source_facts: RenderedSourceFact[];
+  interpretations: InterpretationBlock[];
+  notes: string[];
+}
+
+export interface ConversationAttempt {
+  attempt_id: string;
+  turn_id: string;
+  request_key: string;
+  previous_attempt_id: string | null;
+  status: TurnStatus;
+  answer: FollowUpAnswer | null;
+  error: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface ConversationTurn {
+  turn_id: string;
+  run_id: string;
+  question: string;
+  status: TurnStatus;
+  created_at: string;
+  updated_at: string;
+  attempts: ConversationAttempt[];
+}
+
+/** GET /v1/investigations/{run_id}/conversation */
+export interface ConversationHistoryResponse {
+  run_id: string;
+  turns: ConversationTurn[];
+}
+
+/** POST .../conversation/messages */
+export interface SendMessageRequest {
+  question: string;
+  idempotency_key: string;
+}
+
+/** POST .../conversation/turns/{turn_id}/retry */
+export interface RetryTurnRequest {
+  idempotency_key: string;
+  expected_previous_attempt_id: string;
+}
+
+/** Send/retry response body. */
+export interface ConversationTurnResponse {
+  turn: ConversationTurn;
+  attempt: ConversationAttempt;
+  created: boolean;
+}
+
 export interface InvestigationResponse {
   run_id: string;
   result: InvestigationResult;

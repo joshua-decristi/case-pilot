@@ -1,11 +1,15 @@
 import type {
   CaseListItem,
   CaseSummary,
+  ConversationHistoryResponse,
+  ConversationTurnResponse,
   InvestigationResponse,
   Proposal,
   ProposalDecisionResponse,
+  RetryTurnRequest,
   RunRecord,
   RunSummary,
+  SendMessageRequest,
 } from "./types";
 
 /** CLI default objective — not exposed as an editable UI field. */
@@ -146,4 +150,45 @@ export function reject(
       headers: { [OPERATOR_CSRF_HEADER]: OPERATOR_CSRF_VALUE },
     },
   );
+}
+
+// ---------------------------------------------------------------------------
+// Run-scoped conversation (BackendRoutes.CONVERSATION*)
+// ---------------------------------------------------------------------------
+
+/** GET /v1/investigations/{run_id}/conversation */
+export function getConversation(
+  runId: string,
+): Promise<ConversationHistoryResponse> {
+  return request<ConversationHistoryResponse>(
+    `/v1/investigations/${encodeURIComponent(runId)}/conversation`,
+  );
+}
+
+/** POST /v1/investigations/{run_id}/conversation/messages */
+export function sendMessage(
+  runId: string,
+  body: SendMessageRequest,
+): Promise<ConversationTurnResponse> {
+  return request<ConversationTurnResponse>(
+    `/v1/investigations/${encodeURIComponent(runId)}/conversation/messages`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
+/** POST /v1/investigations/{run_id}/conversation/turns/{turn_id}/retry */
+export function retryTurn(
+  runId: string,
+  turnId: string,
+  body: RetryTurnRequest,
+): Promise<ConversationTurnResponse> {
+  return request<ConversationTurnResponse>(
+    `/v1/investigations/${encodeURIComponent(runId)}/conversation/turns/${encodeURIComponent(turnId)}/retry`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
+/** Stable client idempotency key for one explicit send/retry action. */
+export function newIdempotencyKey(): string {
+  return crypto.randomUUID();
 }

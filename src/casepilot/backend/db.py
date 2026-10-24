@@ -1,14 +1,22 @@
-"""Backend SQLite: investigation runs and action proposals."""
+"""Backend SQLite: investigation runs, proposals, and run-scoped conversation."""
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
+import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from casepilot.shared.contracts import (
+    ConversationAttempt,
+    ConversationTurn,
+    EvidenceProvenance,
+    EvidenceSnapshot,
+    FollowUpAnswer,
     FollowUpTaskPayload,
     InvestigationResult,
     NextAction,
@@ -17,7 +25,10 @@ from casepilot.shared.contracts import (
     RunRecord,
     RunStatus,
     RunSummary,
+    TurnStatus,
 )
+
+CHAT_ELIGIBLE_STATUSES = frozenset({RunStatus.COMPLETED, RunStatus.INDETERMINATE})
 
 
 def _now() -> datetime:
@@ -36,8 +47,35 @@ def _parse_dt(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value)
 
 
+def _new_id(prefix: str) -> str:
+    return f"{prefix}-{uuid.uuid4().hex}"
+
+
+class ConversationConflict(Exception):
+    """Another turn/attempt is already in flight for this run."""
+
+
+class ConversationIdempotencyError(Exception):
+    """Request key reused with different content or target."""
+
+
+class ConversationNotEligible(Exception):
+    """Run missing or not eligible for chat."""
+
+
+class ConversationRetryError(Exception):
+    """Retry preconditions failed (status, previous attempt, etc.)."""
+
+
+@dataclass(frozen=True)
+class BeginAttemptResult:
+    turn: ConversationTurn
+    attempt: ConversationAttempt
+    created: bool
+
+
 class BackendStore:
-    """Thread-safe thin SQLite wrapper for runs and proposals."""
+    """Thread-safe thin SQLite wrapper for runs, proposals, and conversation."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -82,13 +120,58 @@ class BackendStore:
                     request_id TEXT,
                     FOREIGN KEY (run_id) REFERENCES runs(run_id)
                 );
+                CREATE TABLE IF NOT EXISTS conversation_turns (
+                    turn_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    question TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (run_id) REFERENCES runs(run_id)
+                );
+                CREATE TABLE IF NOT EXISTS conversation_attempts (
+                    attempt_id TEXT PRIMARY KEY,
+                    turn_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    request_key TEXT NOT NULL UNIQUE,
+                    previous_attempt_id TEXT,
+                    status TEXT NOT NULL,
+                    answer_json TEXT,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    FOREIGN KEY (turn_id) REFERENCES conversation_turns(turn_id),
+                    FOREIGN KEY (run_id) REFERENCES runs(run_id)
+                );
+                CREATE TABLE IF NOT EXISTS evidence_snapshots (
+                    snapshot_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    attempt_id TEXT,
+                    source_system TEXT NOT NULL,
+                    record_id TEXT NOT NULL,
+                    field_path TEXT NOT NULL,
+                    value_json TEXT NOT NULL,
+                    retrieval_ref TEXT NOT NULL,
+                    retrieved_at TEXT NOT NULL,
+                    provenance TEXT NOT NULL,
+                    FOREIGN KEY (run_id) REFERENCES runs(run_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_conv_turns_run
+                    ON conversation_turns(run_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_conv_attempts_run_status
+                    ON conversation_attempts(run_id, status);
+                CREATE INDEX IF NOT EXISTS idx_conv_attempts_turn
+                    ON conversation_attempts(turn_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_snapshots_run
+                    ON evidence_snapshots(run_id, retrieved_at);
                 """
             )
-            # Migrate legacy DBs: simulator-confirmed task identity on executed proposals.
-            cols = {r[1] for r in self._conn.execute("PRAGMA table_info(proposals)").fetchall()}
+            cols = {row[1] for row in self._conn.execute("PRAGMA table_info(proposals)").fetchall()}
             if "task_id" not in cols:
                 self._conn.execute("ALTER TABLE proposals ADD COLUMN task_id TEXT")
             self._conn.commit()
+
+    # ----- runs -----
 
     def insert_run(
         self,
@@ -192,6 +275,31 @@ class BackendStore:
         assert updated is not None
         return self._row_to_run(updated)
 
+    def list_runs_for_case(self, case_id: str) -> list[RunSummary]:
+        """Persisted investigation history for a case, newest first."""
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT run_id, case_id, status, created_at, completed_at
+                FROM runs
+                WHERE case_id = ?
+                ORDER BY created_at DESC, run_id DESC
+                """,
+                (case_id,),
+            ).fetchall()
+        return [
+            RunSummary(
+                run_id=row["run_id"],
+                case_id=row["case_id"],
+                status=RunStatus(row["status"]),
+                created_at=_parse_dt(row["created_at"]) or _now(),
+                completed_at=_parse_dt(row["completed_at"]),
+            )
+            for row in rows
+        ]
+
+    # ----- proposals -----
+
     def insert_proposal(
         self,
         *,
@@ -262,29 +370,6 @@ class BackendStore:
                 (case_id,),
             ).fetchall()
         return [self._row_to_proposal(r) for r in rows]
-
-    def list_runs_for_case(self, case_id: str) -> list[RunSummary]:
-        """Persisted investigation history for a case, newest first."""
-        with self._lock:
-            rows = self._conn.execute(
-                """
-                SELECT run_id, case_id, status, created_at, completed_at
-                FROM runs
-                WHERE case_id = ?
-                ORDER BY created_at DESC, run_id DESC
-                """,
-                (case_id,),
-            ).fetchall()
-        return [
-            RunSummary(
-                run_id=row["run_id"],
-                case_id=row["case_id"],
-                status=RunStatus(row["status"]),
-                created_at=_parse_dt(row["created_at"]) or _now(),
-                completed_at=_parse_dt(row["completed_at"]),
-            )
-            for row in rows
-        ]
 
     def case_action_flags(self) -> dict[str, tuple[bool, bool]]:
         """One-pass aggregate: case_id -> (pending_review, needs_execution).
@@ -404,3 +489,512 @@ class BackendStore:
                 "SELECT * FROM proposals WHERE proposal_id = ?", (proposal_id,)
             ).fetchone()
         return dict(row) if row else None
+
+    # ----- conversation -----
+
+    def get_conversation(self, run_id: str) -> list[ConversationTurn]:
+        """Full transcript for a run, oldest turn first."""
+        with self._lock:
+            return self._load_turns_unlocked(run_id)
+
+    def get_turn(self, turn_id: str) -> ConversationTurn | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM conversation_turns WHERE turn_id = ?", (turn_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            return self._turn_from_row_unlocked(row)
+
+    def begin_send(
+        self,
+        *,
+        run_id: str,
+        question: str,
+        idempotency_key: str,
+    ) -> BeginAttemptResult:
+        """Start a send attempt. Idempotent on request key; one in-flight per run."""
+        with self._lock:
+            existing = self._attempt_by_key_unlocked(idempotency_key)
+            if existing is not None:
+                turn = self._require_turn_unlocked(existing["turn_id"])
+                if turn["run_id"] != run_id or turn["question"] != question:
+                    raise ConversationIdempotencyError(
+                        "idempotency key reused with different content or target"
+                    )
+                if existing["previous_attempt_id"] is not None:
+                    raise ConversationIdempotencyError(
+                        "idempotency key reused with different content or target"
+                    )
+                return BeginAttemptResult(
+                    turn=self._turn_from_row_unlocked(turn),
+                    attempt=self._row_to_attempt(existing),
+                    created=False,
+                )
+
+            self._assert_chat_eligible_unlocked(run_id)
+            self._assert_no_pending_unlocked(run_id)
+
+            now = _now()
+            turn_id = _new_id("turn")
+            attempt_id = _new_id("att")
+            self._conn.execute(
+                """
+                INSERT INTO conversation_turns (
+                    turn_id, run_id, question, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    turn_id,
+                    run_id,
+                    question,
+                    TurnStatus.PENDING.value,
+                    _dt(now),
+                    _dt(now),
+                ),
+            )
+            self._conn.execute(
+                """
+                INSERT INTO conversation_attempts (
+                    attempt_id, turn_id, run_id, request_key, previous_attempt_id,
+                    status, answer_json, error, created_at, completed_at
+                ) VALUES (?, ?, ?, ?, NULL, ?, NULL, NULL, ?, NULL)
+                """,
+                (
+                    attempt_id,
+                    turn_id,
+                    run_id,
+                    idempotency_key,
+                    TurnStatus.PENDING.value,
+                    _dt(now),
+                ),
+            )
+            self._conn.commit()
+            turn_row = self._conn.execute(
+                "SELECT * FROM conversation_turns WHERE turn_id = ?", (turn_id,)
+            ).fetchone()
+            att_row = self._conn.execute(
+                "SELECT * FROM conversation_attempts WHERE attempt_id = ?",
+                (attempt_id,),
+            ).fetchone()
+            assert turn_row is not None and att_row is not None
+            return BeginAttemptResult(
+                turn=self._turn_from_row_unlocked(turn_row),
+                attempt=self._row_to_attempt(att_row),
+                created=True,
+            )
+
+    def begin_retry(
+        self,
+        *,
+        run_id: str,
+        turn_id: str,
+        idempotency_key: str,
+        expected_previous_attempt_id: str,
+    ) -> BeginAttemptResult:
+        """Start a retry attempt on a failed turn. Key replay returns same attempt."""
+        with self._lock:
+            existing = self._attempt_by_key_unlocked(idempotency_key)
+            if existing is not None:
+                if (
+                    existing["turn_id"] != turn_id
+                    or existing["run_id"] != run_id
+                    or existing["previous_attempt_id"] != expected_previous_attempt_id
+                ):
+                    raise ConversationIdempotencyError(
+                        "idempotency key reused with different content or target"
+                    )
+                turn = self._require_turn_unlocked(turn_id)
+                return BeginAttemptResult(
+                    turn=self._turn_from_row_unlocked(turn),
+                    attempt=self._row_to_attempt(existing),
+                    created=False,
+                )
+
+            self._assert_chat_eligible_unlocked(run_id)
+            turn = self._require_turn_unlocked(turn_id)
+            if turn["run_id"] != run_id:
+                raise ConversationRetryError("turn does not belong to run")
+            if turn["status"] != TurnStatus.FAILED.value:
+                raise ConversationRetryError("turn is not failed")
+
+            prev = self._conn.execute(
+                "SELECT * FROM conversation_attempts WHERE attempt_id = ?",
+                (expected_previous_attempt_id,),
+            ).fetchone()
+            if prev is None or prev["turn_id"] != turn_id:
+                raise ConversationRetryError("expected previous attempt not found on turn")
+            if prev["status"] != TurnStatus.FAILED.value:
+                raise ConversationRetryError("expected previous attempt is not failed")
+
+            latest = self._conn.execute(
+                """
+                SELECT * FROM conversation_attempts
+                WHERE turn_id = ?
+                ORDER BY created_at DESC, attempt_id DESC
+                LIMIT 1
+                """,
+                (turn_id,),
+            ).fetchone()
+            if latest is None or latest["attempt_id"] != expected_previous_attempt_id:
+                raise ConversationRetryError("expected previous attempt is not latest")
+
+            self._assert_no_pending_unlocked(run_id)
+
+            now = _now()
+            attempt_id = _new_id("att")
+            self._conn.execute(
+                """
+                INSERT INTO conversation_attempts (
+                    attempt_id, turn_id, run_id, request_key, previous_attempt_id,
+                    status, answer_json, error, created_at, completed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL)
+                """,
+                (
+                    attempt_id,
+                    turn_id,
+                    run_id,
+                    idempotency_key,
+                    expected_previous_attempt_id,
+                    TurnStatus.PENDING.value,
+                    _dt(now),
+                ),
+            )
+            self._conn.execute(
+                """
+                UPDATE conversation_turns
+                SET status = ?, updated_at = ?
+                WHERE turn_id = ?
+                """,
+                (TurnStatus.PENDING.value, _dt(now), turn_id),
+            )
+            self._conn.commit()
+            turn_row = self._conn.execute(
+                "SELECT * FROM conversation_turns WHERE turn_id = ?", (turn_id,)
+            ).fetchone()
+            att_row = self._conn.execute(
+                "SELECT * FROM conversation_attempts WHERE attempt_id = ?",
+                (attempt_id,),
+            ).fetchone()
+            assert turn_row is not None and att_row is not None
+            return BeginAttemptResult(
+                turn=self._turn_from_row_unlocked(turn_row),
+                attempt=self._row_to_attempt(att_row),
+                created=True,
+            )
+
+    def complete_attempt(
+        self,
+        attempt_id: str,
+        *,
+        answer: FollowUpAnswer,
+        completed_at: datetime | None = None,
+    ) -> ConversationTurn | None:
+        """Atomic pending → succeeded for attempt and its turn."""
+        done = completed_at or _now()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM conversation_attempts WHERE attempt_id = ?",
+                (attempt_id,),
+            ).fetchone()
+            if row is None or row["status"] != TurnStatus.PENDING.value:
+                return None
+            cur = self._conn.execute(
+                """
+                UPDATE conversation_attempts
+                SET status = ?, answer_json = ?, error = NULL, completed_at = ?
+                WHERE attempt_id = ? AND status = ?
+                """,
+                (
+                    TurnStatus.SUCCEEDED.value,
+                    answer.model_dump_json(),
+                    _dt(done),
+                    attempt_id,
+                    TurnStatus.PENDING.value,
+                ),
+            )
+            if cur.rowcount != 1:
+                self._conn.rollback()
+                return None
+            self._conn.execute(
+                """
+                UPDATE conversation_turns
+                SET status = ?, updated_at = ?
+                WHERE turn_id = ?
+                """,
+                (TurnStatus.SUCCEEDED.value, _dt(done), row["turn_id"]),
+            )
+            self._conn.commit()
+            turn_row = self._conn.execute(
+                "SELECT * FROM conversation_turns WHERE turn_id = ?",
+                (row["turn_id"],),
+            ).fetchone()
+            assert turn_row is not None
+            return self._turn_from_row_unlocked(turn_row)
+
+    def fail_attempt(
+        self,
+        attempt_id: str,
+        *,
+        error: str,
+        completed_at: datetime | None = None,
+    ) -> ConversationTurn | None:
+        """Atomic pending → failed for attempt and its turn."""
+        done = completed_at or _now()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM conversation_attempts WHERE attempt_id = ?",
+                (attempt_id,),
+            ).fetchone()
+            if row is None or row["status"] != TurnStatus.PENDING.value:
+                return None
+            cur = self._conn.execute(
+                """
+                UPDATE conversation_attempts
+                SET status = ?, error = ?, completed_at = ?
+                WHERE attempt_id = ? AND status = ?
+                """,
+                (
+                    TurnStatus.FAILED.value,
+                    error,
+                    _dt(done),
+                    attempt_id,
+                    TurnStatus.PENDING.value,
+                ),
+            )
+            if cur.rowcount != 1:
+                self._conn.rollback()
+                return None
+            self._conn.execute(
+                """
+                UPDATE conversation_turns
+                SET status = ?, updated_at = ?
+                WHERE turn_id = ?
+                """,
+                (TurnStatus.FAILED.value, _dt(done), row["turn_id"]),
+            )
+            self._conn.commit()
+            turn_row = self._conn.execute(
+                "SELECT * FROM conversation_turns WHERE turn_id = ?",
+                (row["turn_id"],),
+            ).fetchone()
+            assert turn_row is not None
+            return self._turn_from_row_unlocked(turn_row)
+
+    def recover_interrupted_attempts(
+        self,
+        *,
+        error: str = "interrupted by restart",
+    ) -> int:
+        """Mark all pending attempts (and their turns) failed. Call on startup."""
+        done = _now()
+        with self._lock:
+            pending = self._conn.execute(
+                """
+                SELECT attempt_id, turn_id FROM conversation_attempts
+                WHERE status = ?
+                """,
+                (TurnStatus.PENDING.value,),
+            ).fetchall()
+            if not pending:
+                return 0
+            for row in pending:
+                self._conn.execute(
+                    """
+                    UPDATE conversation_attempts
+                    SET status = ?, error = ?, completed_at = ?
+                    WHERE attempt_id = ? AND status = ?
+                    """,
+                    (
+                        TurnStatus.FAILED.value,
+                        error,
+                        _dt(done),
+                        row["attempt_id"],
+                        TurnStatus.PENDING.value,
+                    ),
+                )
+                self._conn.execute(
+                    """
+                    UPDATE conversation_turns
+                    SET status = ?, updated_at = ?
+                    WHERE turn_id = ?
+                    """,
+                    (TurnStatus.FAILED.value, _dt(done), row["turn_id"]),
+                )
+            self._conn.commit()
+            return len(pending)
+
+    def insert_evidence_snapshot(
+        self,
+        *,
+        run_id: str,
+        source_system: str,
+        record_id: str,
+        field_path: str,
+        value: Any,
+        retrieval_ref: str,
+        provenance: EvidenceProvenance,
+        attempt_id: str | None = None,
+        snapshot_id: str | None = None,
+        retrieved_at: datetime | None = None,
+    ) -> EvidenceSnapshot:
+        sid = snapshot_id or _new_id("snap")
+        when = retrieved_at or _now()
+        with self._lock:
+            run = self._conn.execute(
+                "SELECT run_id FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if run is None:
+                raise ConversationNotEligible("run not found")
+            self._conn.execute(
+                """
+                INSERT INTO evidence_snapshots (
+                    snapshot_id, run_id, attempt_id, source_system, record_id,
+                    field_path, value_json, retrieval_ref, retrieved_at, provenance
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    sid,
+                    run_id,
+                    attempt_id,
+                    source_system,
+                    record_id,
+                    field_path,
+                    json.dumps(value),
+                    retrieval_ref,
+                    _dt(when),
+                    provenance.value,
+                ),
+            )
+            self._conn.commit()
+        return EvidenceSnapshot(
+            snapshot_id=sid,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            source_system=source_system,
+            record_id=record_id,
+            field_path=field_path,
+            value=value,
+            retrieval_ref=retrieval_ref,
+            retrieved_at=when,
+            provenance=provenance,
+        )
+
+    def get_evidence_snapshot(self, snapshot_id: str) -> EvidenceSnapshot | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM evidence_snapshots WHERE snapshot_id = ?",
+                (snapshot_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_snapshot(row)
+
+    def list_evidence_snapshots(self, run_id: str) -> list[EvidenceSnapshot]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT * FROM evidence_snapshots
+                WHERE run_id = ?
+                ORDER BY retrieved_at, snapshot_id
+                """,
+                (run_id,),
+            ).fetchall()
+        return [self._row_to_snapshot(r) for r in rows]
+
+    # ----- conversation internals (caller holds lock) -----
+
+    def _attempt_by_key_unlocked(self, request_key: str) -> sqlite3.Row | None:
+        row = self._conn.execute(
+            "SELECT * FROM conversation_attempts WHERE request_key = ?",
+            (request_key,),
+        ).fetchone()
+        return cast(sqlite3.Row | None, row)
+
+    def _require_turn_unlocked(self, turn_id: str) -> sqlite3.Row:
+        row = self._conn.execute(
+            "SELECT * FROM conversation_turns WHERE turn_id = ?", (turn_id,)
+        ).fetchone()
+        if row is None:
+            raise ConversationRetryError("turn not found")
+        return cast(sqlite3.Row, row)
+
+    def _assert_chat_eligible_unlocked(self, run_id: str) -> None:
+        row = self._conn.execute("SELECT status FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+        if row is None:
+            raise ConversationNotEligible("run not found")
+        status = RunStatus(row["status"])
+        if status not in CHAT_ELIGIBLE_STATUSES:
+            raise ConversationNotEligible(f"run status {status.value} is not chat-eligible")
+
+    def _assert_no_pending_unlocked(self, run_id: str) -> None:
+        row = self._conn.execute(
+            """
+            SELECT attempt_id FROM conversation_attempts
+            WHERE run_id = ? AND status = ?
+            LIMIT 1
+            """,
+            (run_id, TurnStatus.PENDING.value),
+        ).fetchone()
+        if row is not None:
+            raise ConversationConflict("run already has an in-flight conversation attempt")
+
+    def _load_turns_unlocked(self, run_id: str) -> list[ConversationTurn]:
+        rows = self._conn.execute(
+            """
+            SELECT * FROM conversation_turns
+            WHERE run_id = ?
+            ORDER BY created_at, turn_id
+            """,
+            (run_id,),
+        ).fetchall()
+        return [self._turn_from_row_unlocked(r) for r in rows]
+
+    def _turn_from_row_unlocked(self, row: sqlite3.Row) -> ConversationTurn:
+        attempts = self._conn.execute(
+            """
+            SELECT * FROM conversation_attempts
+            WHERE turn_id = ?
+            ORDER BY created_at, attempt_id
+            """,
+            (row["turn_id"],),
+        ).fetchall()
+        return ConversationTurn(
+            turn_id=row["turn_id"],
+            run_id=row["run_id"],
+            question=row["question"],
+            status=TurnStatus(row["status"]),
+            created_at=_parse_dt(row["created_at"]) or _now(),
+            updated_at=_parse_dt(row["updated_at"]) or _now(),
+            attempts=[self._row_to_attempt(a) for a in attempts],
+        )
+
+    def _row_to_attempt(self, row: sqlite3.Row) -> ConversationAttempt:
+        answer = None
+        if row["answer_json"]:
+            answer = FollowUpAnswer.model_validate_json(row["answer_json"])
+        return ConversationAttempt(
+            attempt_id=row["attempt_id"],
+            turn_id=row["turn_id"],
+            request_key=row["request_key"],
+            previous_attempt_id=row["previous_attempt_id"],
+            status=TurnStatus(row["status"]),
+            answer=answer,
+            error=row["error"],
+            created_at=_parse_dt(row["created_at"]) or _now(),
+            completed_at=_parse_dt(row["completed_at"]),
+        )
+
+    def _row_to_snapshot(self, row: sqlite3.Row) -> EvidenceSnapshot:
+        return EvidenceSnapshot(
+            snapshot_id=row["snapshot_id"],
+            run_id=row["run_id"],
+            attempt_id=row["attempt_id"],
+            source_system=row["source_system"],
+            record_id=row["record_id"],
+            field_path=row["field_path"],
+            value=json.loads(row["value_json"]),
+            retrieval_ref=row["retrieval_ref"],
+            retrieved_at=_parse_dt(row["retrieved_at"]) or _now(),
+            provenance=EvidenceProvenance(row["provenance"]),
+        )

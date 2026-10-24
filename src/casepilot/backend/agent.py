@@ -29,7 +29,13 @@ from casepilot.backend.cost_guard import (
     make_live_guard_middleware,
 )
 from casepilot.backend.db import BackendStore
-from casepilot.backend.evidence import RetrievedIndex, validate_evidence
+from casepilot.backend.evidence import (
+    RetrievalContext,
+    RetrievedIndex,
+    persist_index_snapshots,
+    persist_record_captures,
+    validate_evidence,
+)
 from casepilot.backend.hooks import TEST_MODE_ENV, is_test_mode, resolve_test_model
 from casepilot.backend.trace import TraceWriter
 from casepilot.evaluation.cost import ALLOWED_LIVE_MODEL, CostPause
@@ -37,6 +43,8 @@ from casepilot.shared.config import Settings
 from casepilot.shared.contracts import (
     Diagnosis,
     Evidence,
+    EvidenceProvenance,
+    EvidenceSnapshot,
     FollowUpTaskPayload,
     InvestigationResult,
     NextAction,
@@ -131,13 +139,18 @@ def payload_digest(task: FollowUpTaskPayload) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def _build_tools(
+def build_case_read_tools(
     client: SimulatorClient,
     case_id: str,
     index: RetrievedIndex,
     trace: TraceWriter,
 ) -> list[Any]:
-    """Case-bound read tools. Call-count budgets enforced only via middleware."""
+    """Case-bound read tools with server-owned snapshot capture.
+
+    Shared by investigation and follow-up agents. Caller sets ``index.context``
+    provenance (run_id, origin, attempt_id) before invocation. Call-count budgets
+    are enforced only via middleware.
+    """
 
     @tool
     async def get_case() -> dict[str, Any]:
@@ -152,7 +165,13 @@ def _build_tools(
             record = await client.get_case(case_id)
             index.note_case(record)
             index.tool_calls += 1
-            trace.emit("tool", name="get_case", inputs={}, record_ids=[case_id])
+            trace.emit(
+                "tool",
+                name="get_case",
+                inputs={},
+                record_ids=[case_id],
+                captures=len(index.captures),
+            )
             return record.model_dump(mode="json")
         except SimulatorError as exc:
             trace.emit("tool_error", name="get_case", error=str(exc))
@@ -176,6 +195,7 @@ def _build_tools(
                 name="get_documents",
                 inputs={},
                 record_ids=[d.document_id for d in resp.documents],
+                captures=len(index.captures),
             )
             return resp.model_dump(mode="json")
         except SimulatorError as exc:
@@ -200,8 +220,148 @@ def _build_tools(
                 name="get_events",
                 inputs={},
                 record_ids=[e.event_id for e in resp.events],
+                captures=len(index.captures),
             )
             return resp.model_dump(mode="json")
+        except SimulatorError as exc:
+            trace.emit("tool_error", name="get_events", error=str(exc))
+            return {"error": str(exc)}
+
+    return [get_case, get_documents, get_events]
+
+
+def build_follow_up_read_tools(
+    client: SimulatorClient,
+    case_id: str,
+    index: RetrievedIndex,
+    trace: TraceWriter,
+    *,
+    run_id: str,
+    store: BackendStore,
+    attempt_id: str | None = None,
+    catalog: dict[str, EvidenceSnapshot] | None = None,
+) -> list[Any]:
+    """Sole production follow-up read tools: eager field snapshots + citeable refs.
+
+    Sets FOLLOW_UP provenance on ``index.context``. Each tool call persists new
+    leaf-field snapshots immediately and returns ``source_fact_refs`` so the model
+    can cite server-owned snapshot_ids (never invent values/times).
+    """
+    index.context = RetrievalContext(
+        run_id=run_id,
+        case_id=case_id,
+        provenance=EvidenceProvenance.FOLLOW_UP,
+        attempt_id=attempt_id,
+    )
+    cat: dict[str, EvidenceSnapshot] = catalog if catalog is not None else {}
+
+    def _flush_new(before: int) -> list[dict[str, Any]]:
+        new_caps = index.captures[before:]
+        if not new_caps:
+            return []
+        snaps = persist_record_captures(
+            store,
+            new_caps,
+            run_id=run_id,
+            provenance=EvidenceProvenance.FOLLOW_UP,
+            attempt_id=attempt_id,
+        )
+        # Eager path: drop flushed captures so a later full flush cannot duplicate.
+        del index.captures[before:]
+        descriptors: list[dict[str, Any]] = []
+        for s in snaps:
+            cat[s.snapshot_id] = s
+            descriptors.append(
+                {
+                    "snapshot_id": s.snapshot_id,
+                    "field_path": s.field_path,
+                    "source_system": s.source_system,
+                    "record_id": s.record_id,
+                    "retrieval_ref": s.retrieval_ref,
+                    "provenance": s.provenance.value,
+                }
+            )
+        return descriptors
+
+    @tool
+    async def get_case() -> dict[str, Any]:
+        """Fetch the bound case record and server-owned snapshot ids for its fields."""
+        try:
+            record = await client.get_case(case_id)
+            before = len(index.captures)
+            index.note_case(record)
+            index.tool_calls += 1
+            descriptors = _flush_new(before)
+            trace.emit(
+                "tool",
+                name="get_case",
+                inputs={},
+                record_ids=[case_id],
+                snapshot_ids=[d["snapshot_id"] for d in descriptors],
+            )
+            return {**record.model_dump(mode="json"), "source_fact_refs": descriptors}
+        except SimulatorError as exc:
+            trace.emit("tool_error", name="get_case", error=str(exc))
+            return {"error": str(exc)}
+
+    @tool
+    async def get_documents() -> dict[str, Any]:
+        """Fetch documents for the bound case with per-field snapshot ids."""
+        try:
+            resp = await client.get_documents(case_id)
+            before = len(index.captures)
+            index.note_documents(resp.documents)
+            index.tool_calls += 1
+            descriptors = _flush_new(before)
+            by_record: dict[str, list[dict[str, Any]]] = {}
+            for d in descriptors:
+                by_record.setdefault(d["record_id"], []).append(d)
+            docs_out = [
+                {
+                    **doc.model_dump(mode="json"),
+                    "source_fact_refs": by_record.get(doc.document_id, []),
+                }
+                for doc in resp.documents
+            ]
+            trace.emit(
+                "tool",
+                name="get_documents",
+                inputs={},
+                record_ids=[d.document_id for d in resp.documents],
+                snapshot_ids=[d["snapshot_id"] for d in descriptors],
+            )
+            return {"case_id": case_id, "documents": docs_out}
+        except SimulatorError as exc:
+            trace.emit("tool_error", name="get_documents", error=str(exc))
+            return {"error": str(exc)}
+
+    @tool
+    async def get_events() -> dict[str, Any]:
+        """Fetch processing events for the bound case with per-field snapshot ids."""
+        try:
+            resp = await client.get_events(case_id)
+            before = len(index.captures)
+            index.note_events(resp.events)
+            index.tool_calls += 1
+            descriptors = _flush_new(before)
+            by_record: dict[str, list[dict[str, Any]]] = {}
+            for d in descriptors:
+                by_record.setdefault(d["record_id"], []).append(d)
+            events_out = [
+                {
+                    **ev.model_dump(mode="json"),
+                    "source_fact_refs": by_record.get(ev.event_id, []),
+                }
+                for ev in resp.events
+            ]
+            trace.emit(
+                "tool",
+                name="get_events",
+                inputs={},
+                record_ids=[e.event_id for e in resp.events],
+                snapshot_ids=[d["snapshot_id"] for d in descriptors],
+            )
+            return {"case_id": case_id, "events": events_out}
         except SimulatorError as exc:
             trace.emit("tool_error", name="get_events", error=str(exc))
             return {"error": str(exc)}
@@ -262,13 +422,53 @@ async def run_investigation(
     trace.emit("run_start", case_id=case_id, objective=objective[:200])
 
     factory = model_factory or default_model_factory
-    index = RetrievedIndex()
-    ledger = None
-    reservation = None
+    index = RetrievedIndex(
+        context=RetrievalContext(
+            run_id=run_id,
+            case_id=case_id,
+            provenance=EvidenceProvenance.ORIGINAL_RUN,
+        )
+    )
     tracker = LiveCallTracker()
 
     try:
-        model = factory(settings)
+        return await _run_investigation_body(
+            settings=settings,
+            store=store,
+            client=client,
+            case_id=case_id,
+            objective=objective,
+            model_factory=factory,
+            run_id=run_id,
+            trace=trace,
+            index=index,
+            tracker=tracker,
+        )
+    finally:
+        # Run row is inserted on all body exit paths; FK requires it first.
+        snaps = persist_index_snapshots(store, index)
+        if snaps:
+            trace.emit("evidence_snapshots", count=len(snaps), run_id=run_id)
+
+
+async def _run_investigation_body(
+    *,
+    settings: Settings,
+    store: BackendStore,
+    client: SimulatorClient,
+    case_id: str,
+    objective: str,
+    model_factory: ModelFactory,
+    run_id: str,
+    trace: TraceWriter,
+    index: RetrievedIndex,
+    tracker: LiveCallTracker,
+) -> InvestigationOutcome:
+    ledger = None
+    reservation = None
+
+    try:
+        model = model_factory(settings)
     except CostPause as exc:
         return _persist_failed(
             store, run_id=run_id, case_id=case_id, objective=objective, error=str(exc), trace=trace
@@ -292,7 +492,7 @@ async def run_investigation(
             store, run_id=run_id, case_id=case_id, objective=objective, error=str(exc), trace=trace
         )
 
-    tools = _build_tools(client, case_id, index, trace)
+    tools = build_case_read_tools(client, case_id, index, trace)
     middleware: list[Any] = [
         ModelCallLimitMiddleware(
             run_limit=settings.max_model_turns,
@@ -503,6 +703,7 @@ async def run_investigation(
         cost_usd=cost,
         usage=usage,
         provider_model=provider_model,
+        capture_count=len(index.captures),
     )
     return InvestigationOutcome(
         result=result,

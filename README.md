@@ -252,6 +252,7 @@ Grading is rule-based against `evals/ground_truth/labels.json` (not an LLM judge
 - **Operator gate:** approve/reject require `OPERATOR_TOKEN`. Backend sends the stored payload to the simulator with the service token only after approval.
 - **Idempotent task create:** simulator dedupes follow-up tasks by proposal id.
 - **Confirmed task identity:** on successful approve/execute, backend persists the simulator `task_id` on the proposal (nullable for legacy rows). Operator UI shows task id/title/body when present; never fabricates ids for historical executions.
+- **Run-scoped grounded chat:** completed/indeterminate runs support follow-up Q&A under `/v1/investigations/{run_id}/conversation`. Answers cite server-owned field snapshots only (model cannot invent values/times). Send/retry are idempotent; interrupted pending attempts recover on startup. Operator UI `ChatPanel` for eligible runs.
 - **Tests:** scripted model hooks (`CASEPILOT_TEST_MODE`) — no paid calls.
 - **Fail-closed offline tests:** with `CASEPILOT_TEST_MODE=1` and no installed scripted/hook model, `default_model_factory` refuses live OpenRouter fallback (investigation fails offline instead of billing).
 - **Simulator outage harness (test-only):** when `CASEPILOT_TEST_MODE=1`, simulator exposes `PUT /v1/_test/outage` and `GET /v1/_test/mode` to inject reversible 503s on domain routes (health stays up). Routes are **not** registered without test mode.
@@ -267,7 +268,7 @@ Agent stack: **LangChain** (`create_agent`, tools, structured output, OpenRouter
 | `evals/reports/`                 | Generated (gitignored except keep) | Live reports + `cost_ledger.json`                                           |
 | `docs/sample-evaluation.json`    | Curated sanitized sample           | Compact honest grades/metadata for portfolio readers                        |
 | `SIMULATOR_DB_PATH`              | Simulator                          | Seeded records + executed tasks                                             |
-| `BACKEND_DB_PATH`                | Backend                            | Runs, proposals, approval/audit state                                       |
+| `BACKEND_DB_PATH`                | Backend                            | Runs, proposals, approval/audit state, conversation turns, evidence snapshots |
 | `TRACE_DIR`                      | Backend                            | JSONL traces (no secrets/tokens)                                            |
 
 **Limitations:**

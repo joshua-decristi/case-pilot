@@ -15,6 +15,7 @@ import type {
 } from '@/types';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { ChatPanel } from './ChatPanel';
 import { ProposalPanel } from './ProposalPanel';
 import { RunHistory } from './RunHistory';
 import { RunResult } from './RunResult';
@@ -253,6 +254,9 @@ export function CaseDetail({ caseId, onBack }: CaseDetailProps) {
 
   // Show findings when we have a run; skip empty "no selection" while investigating.
   const showResult = selectedRun != null;
+  const chatEligible =
+    selectedRun != null &&
+    (selectedRun.status === 'completed' || selectedRun.status === 'indeterminate');
 
   return (
     <main className="mx-auto max-w-6xl px-4 py-6 text-[14px] leading-[1.6] text-slate-900">
@@ -334,6 +338,16 @@ export function CaseDetail({ caseId, onBack }: CaseDetailProps) {
               <p className="text-sm text-slate-500">
                 No investigation yet. Run Investigate to start.
               </p>
+            </section>
+          ) : null}
+
+          {chatEligible ? (
+            <section className="min-w-0">
+              <ChatPanel
+                key={selectedRun.run_id}
+                runId={selectedRun.run_id}
+                disabled={investigating}
+              />
             </section>
           ) : null}
 
