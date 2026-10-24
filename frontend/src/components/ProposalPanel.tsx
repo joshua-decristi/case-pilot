@@ -198,12 +198,49 @@ export function ProposalPanel({
         ) : null}
 
         {status === "executed" ? (
-          <p
+          <div
             role="status"
-            className="border-l-2 border-emerald-500 pl-3 text-sm leading-relaxed text-emerald-800"
+            className="space-y-2 border-l-2 border-emerald-500 pl-3 text-sm leading-relaxed text-emerald-900"
           >
-            Executed.
-          </p>
+            <p className="font-medium text-emerald-900">Executed</p>
+            {proposal.task_id ? (
+              <dl className="space-y-1 text-emerald-900">
+                <div>
+                  <dt className="inline text-xs font-medium uppercase tracking-wide text-emerald-800/80">
+                    Task ID{" "}
+                  </dt>
+                  <dd className="inline font-mono text-sm">{proposal.task_id}</dd>
+                </div>
+                <div>
+                  <dt className="inline text-xs font-medium uppercase tracking-wide text-emerald-800/80">
+                    Title{" "}
+                  </dt>
+                  <dd className="inline text-sm">{task.title}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs font-medium uppercase tracking-wide text-emerald-800/80">
+                    Body
+                  </dt>
+                  <dd className="mt-0.5 whitespace-pre-wrap break-words font-sans text-sm">
+                    {task.body}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="inline text-xs font-medium uppercase tracking-wide text-emerald-800/80">
+                    Case{" "}
+                  </dt>
+                  <dd className="inline font-mono text-sm">
+                    {task.case_id || proposal.case_id}
+                  </dd>
+                </div>
+              </dl>
+            ) : (
+              <p className="text-sm text-emerald-900">
+                Executed, but historical task identity is unavailable (no stored
+                task ID).
+              </p>
+            )}
+          </div>
         ) : null}
 
         {actionError ? (

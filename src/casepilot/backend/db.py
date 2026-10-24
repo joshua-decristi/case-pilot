@@ -84,6 +84,10 @@ class BackendStore:
                 );
                 """
             )
+            # Migrate legacy DBs: simulator-confirmed task identity on executed proposals.
+            cols = {r[1] for r in self._conn.execute("PRAGMA table_info(proposals)").fetchall()}
+            if "task_id" not in cols:
+                self._conn.execute("ALTER TABLE proposals ADD COLUMN task_id TEXT")
             self._conn.commit()
 
     def insert_run(
@@ -306,6 +310,8 @@ class BackendStore:
         }
 
     def _row_to_proposal(self, row: sqlite3.Row) -> Proposal:
+        keys = row.keys()
+        task_id = row["task_id"] if "task_id" in keys else None
         return Proposal(
             proposal_id=row["proposal_id"],
             run_id=row["run_id"],
@@ -318,6 +324,7 @@ class BackendStore:
             decided_at=_parse_dt(row["decided_at"]),
             operator_identity=row["operator_identity"],
             execution_error=row["execution_error"],
+            task_id=task_id,
         )
 
     def transition_proposal(
@@ -331,8 +338,12 @@ class BackendStore:
         clear_execution_error: bool = False,
         request_id: str | None = None,
         decided_at: datetime | None = None,
+        task_id: str | None = None,
     ) -> Proposal | None:
-        """Atomic status transition. Returns updated proposal or None if no match."""
+        """Atomic status transition. Returns updated proposal or None if no match.
+
+        Pass task_id when moving to EXECUTED after simulator confirms identity.
+        """
         decided = decided_at or _now()
         allowed = tuple(s.value for s in from_statuses)
         placeholders = ",".join("?" * len(allowed))
@@ -351,6 +362,9 @@ class BackendStore:
             new_operator = operator_identity or row["operator_identity"]
             new_request = request_id or row["request_id"]
             decided_value = row["decided_at"] or _dt(decided)
+            keys = row.keys()
+            prev_task = row["task_id"] if "task_id" in keys else None
+            new_task = task_id if task_id is not None else prev_task
             cur = self._conn.execute(
                 f"""
                 UPDATE proposals SET
@@ -358,7 +372,8 @@ class BackendStore:
                     operator_identity = ?,
                     execution_error = ?,
                     request_id = ?,
-                    decided_at = ?
+                    decided_at = ?,
+                    task_id = ?
                 WHERE proposal_id = ? AND status IN ({placeholders})
                 """,
                 (
@@ -367,6 +382,7 @@ class BackendStore:
                     new_error,
                     new_request,
                     decided_value,
+                    new_task,
                     proposal_id,
                     *allowed,
                 ),

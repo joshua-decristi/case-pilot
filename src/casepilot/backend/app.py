@@ -323,9 +323,9 @@ def create_app(
             request_id=request_id,
         )
 
-        # Execute with immutable stored payload only
+        # Execute with immutable stored payload only; persist simulator task_id atomically.
         try:
-            await backend.client.create_follow_up_task(
+            task_resp = await backend.client.create_follow_up_task(
                 prop.case_id,
                 CreateFollowUpTaskRequest(
                     proposal_id=prop.proposal_id,
@@ -355,11 +355,13 @@ def create_app(
             proposal_id,
             from_statuses={ProposalStatus.APPROVED},
             to_status=ProposalStatus.EXECUTED,
+            task_id=task_resp.task_id,
             clear_execution_error=True,
         )
         TraceWriter(backend.settings.trace_dir, prop.run_id).emit(
             "proposal_executed",
             proposal_id=proposal_id,
+            task_id=task_resp.task_id,
         )
         if executed is None:
             prop = backend.store.get_proposal(proposal_id)

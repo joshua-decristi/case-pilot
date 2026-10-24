@@ -100,6 +100,8 @@ export interface Proposal {
   decided_at: string | null;
   operator_identity: string | null;
   execution_error: string | null;
+  /** Simulator-confirmed; never fabricate for legacy rows. */
+  task_id: string | null;
 }
 
 export interface InvestigationResponse {

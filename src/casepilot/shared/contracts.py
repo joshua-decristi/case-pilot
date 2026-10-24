@@ -218,6 +218,7 @@ class Proposal(BaseModel):
     decided_at: datetime | None = None
     operator_identity: str | None = None
     execution_error: str | None = None
+    task_id: str | None = None  # simulator-confirmed; never fabricate for legacy rows
 
 
 class ApproveProposalRequest(BaseModel):
