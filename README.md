@@ -12,7 +12,7 @@ Architecture sketch: [`docs/architecture.md`](docs/architecture.md). Sanitized s
 
 | Gate                | Result                                                                                                                                                                                                                                                |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Offline quality     | **103** pytest cases collected (functionality-focused consolidation from **117** — three negative parameterization cases plus one independent metadata-gap/backend-regression e2e case — no paid reruns); local gates green: Ruff check + format, mypy, pytest (**no paid calls**); operator-UI **frontend build** + reviews also passed                         |
+| Offline quality     | **162** pytest cases collected (includes offline fail-closed, outage harness, task_id approval, grounded chat — no paid reruns); local gates green: Ruff check + format, mypy, pytest (**no paid calls**); operator-UI **frontend build** + reviews also passed                         |
 | Live smoke (latest) | **CASE-001** run `82e71af3-2bfa-4145-9b51-8afa58644fc4`: **status `completed`**, diagnosis **`missing_document`**, **5** grounded evidence rows, next_action **`request_missing_document`**, ledger settle **`$0.00169768`** (GLM-only, cost-guarded) |
 | Live smoke history  | Attempt 1 failed (async `wrap_model_call`); attempt 2 `indeterminate` / `escalate_to_human` (evidence validation) — retained as history only, not the headline                                                                                        |
 | Held-out live eval  | **N=8** (`evaluation` split): category **7/8**, evidence IDs **7/8**, action **6/8**, uncertainty **1/1**, hard fails **0/8** (unchanged)                                                                                                             |
@@ -44,7 +44,7 @@ SQLite enterprise records + follow-up tasks
 
 - **Simulator** (`casepilot.simulator.app`, default `127.0.0.1:8001`): seeded synthetic cases, documents, processing events; service-token auth; owns `SIMULATOR_DB_PATH`.
 - **Backend** (`casepilot.backend.app`, default `127.0.0.1:8000`): investigation orchestration, proposals/approvals, run storage, JSONL traces, **global live-cost ledger**; operator-token auth for approve/reject; owns `BACKEND_DB_PATH` and `TRACE_DIR`.
-- **Operator UI** (`frontend/`, Vite default `http://127.0.0.1:5173`): single-operator local shell for cases, findings, evidence, proposals, and approve/reject/retry. Same-origin `/api` via the Vite dev proxy — **not** a production host.
+- **Operator UI** (`frontend/`, Vite default `http://127.0.0.1:5173`): single-operator local shell for cases, findings, evidence, proposals, approve/reject/retry, and grounded run chat. Same-origin `/api` via the Vite dev proxy — **not** a production host. Override listen port with `FRONTEND_PORT` or `DEV_PORT` (CSRF allowlist tracks the chosen port; `strictPort` is on).
 
 Services bind loopback only. The backend never reads the simulator DB directly (and vice versa). The browser never talks to the simulator and never receives `SIMULATOR_SERVICE_TOKEN`.
 
@@ -68,6 +68,8 @@ make dev                    # start simulator + backend; wait on /health
 # Operator UI (separate process; needs make dev already up)
 npm install --prefix frontend
 npm run dev --prefix frontend   # http://127.0.0.1:5173
+# Isolated manual env (CSRF allowed origins follow the port):
+# FRONTEND_PORT=5174 npm run dev --prefix frontend
 ```
 
 ### Local auth
@@ -118,7 +120,7 @@ npm install --prefix frontend
 npm run dev --prefix frontend
 ```
 
-Open **http://127.0.0.1:5173**. The Vite dev server proxies same-origin `/api` to the backend (`127.0.0.1:8000`).
+Open **http://127.0.0.1:5173** (or `http://127.0.0.1:$FRONTEND_PORT` when set). The Vite dev server proxies same-origin `/api` to the backend (`BACKEND_BASE_URL`, default `127.0.0.1:8000`).
 
 **Credentials (local wiring only):**
 
@@ -162,7 +164,7 @@ Manual only — **no new automated UI tests** in this workstream. Against a runn
 | Manual network failure on Investigate → inline error; prior findings preserved; reload clean | **Verified** (forced failure; **no paid calls**) |
 | Failed/interrupted execution → explicit **Retry** via existing backend behavior | **Unavailable / not verified** — no `approved`-unfinished or `execution_failed` state observed; do **not** claim coverage |
 
-**Automated gates (separate from manual UI checklist):** **103** pytest + Ruff lint/format + mypy + frontend build; reviews passed.
+**Automated gates (separate from manual UI checklist):** **162** pytest + Ruff lint/format + mypy + frontend build; reviews passed.
 
 **Overall:** operator-UI spec is **not fully validated** solely because execution recovery/retry was **unavailable** to observe. Ledger unchanged this pass. Further paid Investigate/eval calls still require **explicit** authorization.
 

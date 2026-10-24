@@ -9,13 +9,17 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
 
 const DEV_HOST = "127.0.0.1";
-const DEV_PORT = 5173;
+const DEFAULT_DEV_PORT = 5173;
 
-/** Exact browser origins for this Vite server (port 5173). */
-const ALLOWED_ORIGINS = new Set([
-  `http://127.0.0.1:${DEV_PORT}`,
-  `http://localhost:${DEV_PORT}`,
-]);
+/** FRONTEND_PORT / DEV_PORT override for isolated manual envs (CSRF origins follow). */
+function resolveDevPort(): number {
+  const raw = process.env.FRONTEND_PORT || process.env.DEV_PORT || String(DEFAULT_DEV_PORT);
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > 65535) {
+    throw new Error(`Invalid FRONTEND_PORT/DEV_PORT: ${JSON.stringify(raw)}`);
+  }
+  return n;
+}
 
 /** Custom non-simple header required on decision routes (CSRF preflight). */
 export const OPERATOR_CSRF_HEADER = "x-casepilot-operator";
@@ -100,10 +104,15 @@ function headerValue(
 export default defineConfig(({ mode }) => {
   // Root .env only — never VITE_ secrets; server-side proxy use only.
   const env = loadEnv(mode, repoRoot, "");
+  const devPort = resolveDevPort();
+  const allowedOrigins = new Set([
+    `http://127.0.0.1:${devPort}`,
+    `http://localhost:${devPort}`,
+  ]);
   const backend = resolveBackendBaseUrl(
-    env.BACKEND_BASE_URL || "http://127.0.0.1:8000",
+    env.BACKEND_BASE_URL || process.env.BACKEND_BASE_URL || "http://127.0.0.1:8000",
   );
-  const operatorToken = env.OPERATOR_TOKEN || "";
+  const operatorToken = env.OPERATOR_TOKEN || process.env.OPERATOR_TOKEN || "";
 
   const csrfGuard: Plugin = {
     name: "casepilot-decision-csrf-guard",
@@ -131,7 +140,7 @@ export default defineConfig(({ mode }) => {
           res.end(JSON.stringify({ detail: "loopback client required" }));
           return;
         }
-        if (!origin || !ALLOWED_ORIGINS.has(origin)) {
+        if (!origin || !allowedOrigins.has(origin)) {
           res.statusCode = 403;
           res.setHeader("Content-Type", "application/json");
           res.end(JSON.stringify({ detail: "exact local origin required" }));
@@ -163,7 +172,7 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       host: DEV_HOST,
-      port: DEV_PORT,
+      port: devPort,
       strictPort: true,
       proxy: {
         "/api": {
@@ -189,7 +198,7 @@ export default defineConfig(({ mode }) => {
                 rejectProxy(res, 403, "loopback client required", proxyReq);
                 return;
               }
-              if (!origin || !ALLOWED_ORIGINS.has(origin)) {
+              if (!origin || !allowedOrigins.has(origin)) {
                 rejectProxy(res, 403, "exact local origin required", proxyReq);
                 return;
               }
