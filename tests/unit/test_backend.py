@@ -194,6 +194,53 @@ def test_scripted_install_requires_test_mode(monkeypatch: pytest.MonkeyPatch):
         install_scripted_model([AIMessage(content="x")])
 
 
+def test_default_model_factory_test_mode_no_script_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """CASEPILOT_TEST_MODE=1 + no hook must never fall through to paid provider."""
+    from casepilot.backend.agent import default_model_factory
+    from casepilot.evaluation.cost import ALLOWED_LIVE_MODEL
+
+    monkeypatch.setenv(TEST_MODE_ENV, "1")
+    clear_test_hooks()
+    settings = get_settings(
+        _env_file=None,
+        simulator_service_token=TOKEN_SIM,
+        operator_token=TOKEN_OP,
+        openrouter_api_key="sk-would-be-paid",
+        openrouter_model=ALLOWED_LIVE_MODEL,
+        backend_db_path=tmp_path / "b.sqlite3",
+        trace_dir=tmp_path / "traces",
+    )
+    with pytest.raises(RuntimeError, match="refusing live paid provider fallback"):
+        default_model_factory(settings)
+
+
+@pytest.mark.asyncio
+async def test_investigation_test_mode_no_script_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Investigation with default factory in test mode + no script stays offline."""
+    monkeypatch.setenv(TEST_MODE_ENV, "1")
+    clear_test_hooks()
+    settings = _settings(tmp_path, openrouter_api_key="sk-would-be-paid")
+    store = BackendStore(settings.backend_db_path)
+    http = _mock_simulator()
+    client = SimulatorClient(settings, client=http)
+    outcome = await run_investigation(
+        settings=settings,
+        store=store,
+        client=client,
+        case_id=CASE_ID,
+        objective="x",
+    )
+    result = outcome.result
+    assert result.status == RunStatus.FAILED
+    assert "refusing live paid provider fallback" in (result.explanation or "")
+    store.close()
+    await http.aclose()
+
+
 def test_evidence_rejects_unknown_record():
     idx = RetrievedIndex()
     idx.note_documents(_docs().documents)
@@ -1018,7 +1065,9 @@ def test_guard_live_call_temp_ledger_no_provider(tmp_path: Path, monkeypatch):
     )
 
 
-def test_default_model_factory_sets_max_tokens_and_provider_caps():
+def test_default_model_factory_sets_max_tokens_and_provider_caps(
+    monkeypatch: pytest.MonkeyPatch,
+):
     """Production factory → serialized offline payload carries GLM caps/routing."""
     from casepilot.backend.agent import default_model_factory
     from casepilot.backend.cost_guard import (
@@ -1029,6 +1078,10 @@ def test_default_model_factory_sets_max_tokens_and_provider_caps():
         live_request_payload_preview,
     )
     from casepilot.evaluation.cost import ALLOWED_LIVE_MODEL
+
+    # Live path only — fail-closed test mode must be off.
+    monkeypatch.delenv(TEST_MODE_ENV, raising=False)
+    clear_test_hooks()
 
     price = live_model_price()
     assert price.verified is True

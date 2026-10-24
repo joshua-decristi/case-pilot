@@ -30,7 +30,7 @@ from casepilot.backend.cost_guard import (
 )
 from casepilot.backend.db import BackendStore
 from casepilot.backend.evidence import RetrievedIndex, validate_evidence
-from casepilot.backend.hooks import TEST_MODE_ENV, resolve_test_model
+from casepilot.backend.hooks import TEST_MODE_ENV, is_test_mode, resolve_test_model
 from casepilot.backend.trace import TraceWriter
 from casepilot.evaluation.cost import ALLOWED_LIVE_MODEL, CostPause
 from casepilot.shared.config import Settings
@@ -98,10 +98,19 @@ class InvestigationOutcome:
 
 
 def default_model_factory(settings: Settings) -> BaseChatModel:
-    """Live OpenRouter model. Test hooks take precedence when installed."""
+    """Live OpenRouter model. Test hooks take precedence when installed.
+
+    Fail-closed: CASEPILOT_TEST_MODE with no scripted/hook model never falls
+    through to the live paid provider (investigation and follow-up share this).
+    """
     hooked = resolve_test_model()
     if hooked is not None:
         return hooked
+    if is_test_mode():
+        raise RuntimeError(
+            f"{TEST_MODE_ENV}=1 requires an installed scripted model "
+            "(refusing live paid provider fallback)"
+        )
     key = settings.openrouter_api_key
     if key is None or not key.get_secret_value():
         raise RuntimeError(

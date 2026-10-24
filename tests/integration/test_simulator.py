@@ -19,7 +19,7 @@ from casepilot.shared import (
     SimulatorRoutes,
     get_settings,
 )
-from casepilot.simulator.app import create_app
+from casepilot.simulator.app import clear_outage, create_app
 from casepilot.simulator.seed import seed
 
 TOKEN = "test-simulator-service-token"
@@ -370,3 +370,70 @@ def test_concurrent_mixed_reads_and_writes(client: TestClient) -> None:
 
     assert read_codes == [200] * 12
     assert write_codes == [200] * 8
+
+
+def test_outage_routes_absent_without_test_mode(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CASEPILOT_TEST_MODE", raising=False)
+    clear_outage()
+    settings = get_settings(
+        _env_file=None,
+        simulator_service_token=TOKEN,
+        operator_token=OPERATOR,
+        simulator_db_path=db_path,
+    )
+    app = create_app(settings=settings, db_path=db_path)
+    paths = {getattr(r, "path", None) for r in app.routes}
+    assert "/v1/_test/outage" not in paths
+    assert "/v1/_test/mode" not in paths
+
+
+def test_reversible_simulator_outage_injection(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test-mode outage 503s domain routes and clears cleanly (approval failure inject)."""
+    monkeypatch.setenv("CASEPILOT_TEST_MODE", "1")
+    clear_outage()
+    settings = get_settings(
+        _env_file=None,
+        simulator_service_token=TOKEN,
+        operator_token=OPERATOR,
+        simulator_db_path=db_path,
+    )
+    app = create_app(settings=settings, db_path=db_path)
+    with TestClient(app) as client:
+        mode = client.get("/v1/_test/mode")
+        assert mode.status_code == 200
+        assert mode.json()["outage"] == "0"
+
+        case_path = SimulatorRoutes.CASE.format(case_id="CASE-001")
+        assert client.get(case_path, headers=AUTH).status_code == 200
+
+        on = client.put("/v1/_test/outage", json={"enabled": True})
+        assert on.status_code == 200
+        assert on.json()["outage"] == "1"
+        assert client.get("/v1/_test/mode").json()["outage"] == "1"
+        assert client.get(case_path, headers=AUTH).status_code == 503
+        assert client.get(SimulatorRoutes.HEALTH).status_code == 200
+
+        task_path = SimulatorRoutes.FOLLOW_UP_TASKS.format(case_id="CASE-001")
+        write = client.post(
+            task_path,
+            headers=AUTH,
+            json={
+                "proposal_id": "prop-outage",
+                "task": {
+                    "title": "t",
+                    "body": "b",
+                    "case_id": "CASE-001",
+                },
+            },
+        )
+        assert write.status_code == 503
+
+        off = client.put("/v1/_test/outage", json={"enabled": False})
+        assert off.status_code == 200
+        assert off.json()["outage"] == "0"
+        assert client.get(case_path, headers=AUTH).status_code == 200
+    clear_outage()

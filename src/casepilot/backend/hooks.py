@@ -62,8 +62,17 @@ def clear_test_hooks() -> None:
     _model_factory = None
 
 
+def has_test_hook() -> bool:
+    """True when a scripted queue or custom factory is installed."""
+    return _model_factory is not None or _scripted_messages is not None
+
+
 def resolve_test_model() -> BaseChatModel | None:
-    """Return a test model if test mode + hook installed; else None."""
+    """Return a test model if test mode + hook installed; else None.
+
+    Callers in test mode must not treat None as permission to use a live paid
+    provider — see default_model_factory fail-closed behavior.
+    """
     if not is_test_mode():
         return None
     if _model_factory is not None:

@@ -20,7 +20,12 @@ from casepilot.backend.agent import (
 )
 from casepilot.backend.client import SimulatorClient, SimulatorError
 from casepilot.backend.db import BackendStore
-from casepilot.backend.hooks import TEST_MODE_ENV, install_scripted_model, is_test_mode
+from casepilot.backend.hooks import (
+    TEST_MODE_ENV,
+    has_test_hook,
+    install_scripted_model,
+    is_test_mode,
+)
 from casepilot.backend.trace import TraceWriter
 from casepilot.shared.config import Settings, get_settings
 from casepilot.shared.contracts import (
@@ -414,7 +419,11 @@ def create_app(
 
         @app.get("/v1/_test/mode")
         async def test_mode_flag() -> dict[str, str]:
-            return {"test_mode": "1", "env": TEST_MODE_ENV}
+            return {
+                "test_mode": "1",
+                "env": TEST_MODE_ENV,
+                "scripted_hook": "1" if has_test_hook() else "0",
+            }
 
     @app.exception_handler(Exception)
     async def unhandled(_request: Request, _exc: Exception) -> JSONResponse:

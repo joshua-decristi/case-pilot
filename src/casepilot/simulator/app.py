@@ -1,9 +1,10 @@
 """FastAPI enterprise simulator application."""
 
+import os
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 
@@ -20,6 +21,34 @@ from casepilot.shared import (
 from casepilot.simulator.auth import require_service_token
 from casepilot.simulator.db import apply_schema, connect
 from casepilot.simulator.store import ConflictError, SimulatorStore
+
+TEST_MODE_ENV = "CASEPILOT_TEST_MODE"
+# Process-local reversible outage flag (manual/browser tests only).
+_outage_enabled = False
+
+
+def is_test_mode() -> bool:
+    return os.environ.get(TEST_MODE_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def set_outage(enabled: bool) -> None:
+    """Toggle isolated simulator outage. Requires CASEPILOT_TEST_MODE."""
+    if not is_test_mode():
+        raise RuntimeError(
+            f"set_outage requires {TEST_MODE_ENV}=1 "
+            "(refusing outage injection outside explicit test mode)"
+        )
+    global _outage_enabled
+    _outage_enabled = bool(enabled)
+
+
+def clear_outage() -> None:
+    global _outage_enabled
+    _outage_enabled = False
+
+
+def outage_enabled() -> bool:
+    return _outage_enabled
 
 
 def create_app(
@@ -66,16 +95,25 @@ def create_app(
     StoreDep = Annotated[SimulatorStore, Depends(get_store)]
     AuthDep = Annotated[None, Depends(require_service_token)]
 
+    def _reject_if_outage() -> None:
+        if _outage_enabled:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="simulator outage (test injection)",
+            )
+
     @application.get(SimulatorRoutes.HEALTH)
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
     @application.get(SimulatorRoutes.CASES, response_model=list[CaseRecord])
     def list_cases(store: StoreDep, _auth: AuthDep) -> list[CaseRecord]:
+        _reject_if_outage()
         return store.list_cases()
 
     @application.get(SimulatorRoutes.CASE, response_model=CaseRecord)
     def get_case(case_id: str, store: StoreDep, _auth: AuthDep) -> CaseRecord:
+        _reject_if_outage()
         record = store.get_case(case_id)
         if record is None:
             raise HTTPException(
@@ -86,6 +124,7 @@ def create_app(
 
     @application.get(SimulatorRoutes.DOCUMENTS, response_model=DocumentListResponse)
     def get_documents(case_id: str, store: StoreDep, _auth: AuthDep) -> DocumentListResponse:
+        _reject_if_outage()
         if not store.case_exists(case_id):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -98,6 +137,7 @@ def create_app(
 
     @application.get(SimulatorRoutes.EVENTS, response_model=EventListResponse)
     def get_events(case_id: str, store: StoreDep, _auth: AuthDep) -> EventListResponse:
+        _reject_if_outage()
         if not store.case_exists(case_id):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -118,6 +158,7 @@ def create_app(
         store: StoreDep,
         _auth: AuthDep,
     ) -> CreateFollowUpTaskResponse:
+        _reject_if_outage()
         if body.task.case_id != case_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -139,6 +180,34 @@ def create_app(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=str(exc),
             ) from exc
+
+    # ----- explicit test-only outage injection (never registered live) -----
+    if is_test_mode():
+
+        @application.get("/v1/_test/mode")
+        def test_mode_flag() -> dict[str, str]:
+            return {
+                "test_mode": "1",
+                "env": TEST_MODE_ENV,
+                "outage": "1" if _outage_enabled else "0",
+            }
+
+        @application.put("/v1/_test/outage")
+        def put_outage(payload: dict[str, Any]) -> dict[str, str]:
+            enabled = payload.get("enabled")
+            if not isinstance(enabled, bool):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="enabled bool required",
+                )
+            try:
+                set_outage(enabled)
+            except RuntimeError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="forbidden",
+                ) from exc
+            return {"status": "ok", "outage": "1" if enabled else "0"}
 
     return application
 
