@@ -32,6 +32,7 @@ from casepilot.backend.hooks import (
     install_scripted_model,
     is_test_mode,
 )
+from casepilot.backend.pilot_observability import emit_forbidden_attempt
 from casepilot.backend.trace import TraceWriter
 from casepilot.shared.config import Settings, get_settings
 from casepilot.shared.contracts import (
@@ -80,6 +81,32 @@ def _operator_auth(
     # Timing-safe compare; unequal lengths are a mismatch (not a raise).
     if len(token) != len(expected) or not secrets.compare_digest(token, expected):
         raise HTTPException(status_code=403, detail="invalid operator token")
+
+
+def _auth_or_trace_forbidden(
+    backend: AppState,
+    authorization: str | None,
+    *,
+    kind: str,
+    proposal_id: str,
+) -> None:
+    """Operator auth; on failure emit blocked forbidden_attempt for pilot safety."""
+    try:
+        _operator_auth(backend.settings, authorization)
+    except HTTPException as exc:
+        prop = backend.store.get_proposal(proposal_id)
+        run_id = prop.run_id if prop is not None else "_unscoped"
+        case_id = prop.case_id if prop is not None else None
+        emit_forbidden_attempt(
+            TraceWriter(backend.settings.trace_dir, run_id).emit,
+            kind=kind,
+            detail=f"http_{exc.status_code}",
+            blocked=True,
+            case_id=case_id,
+            run_id=run_id if prop is not None else None,
+            proposal_id=proposal_id,
+        )
+        raise
 
 
 def _assert_payload_integrity(prop: Proposal) -> None:
@@ -408,7 +435,9 @@ def create_app(
         authorization: str | None = Header(default=None),
     ) -> ProposalDecisionResponse:
         backend = _backend(request)
-        _operator_auth(backend.settings, authorization)
+        _auth_or_trace_forbidden(
+            backend, authorization, kind="approve_proposal", proposal_id=proposal_id
+        )
         prop = backend.store.get_proposal(proposal_id)
         if prop is None:
             raise HTTPException(status_code=404, detail="proposal not found")
@@ -524,7 +553,9 @@ def create_app(
         authorization: str | None = Header(default=None),
     ) -> ProposalDecisionResponse:
         backend = _backend(request)
-        _operator_auth(backend.settings, authorization)
+        _auth_or_trace_forbidden(
+            backend, authorization, kind="reject_proposal", proposal_id=proposal_id
+        )
         prop = backend.store.get_proposal(proposal_id)
         if prop is None:
             raise HTTPException(status_code=404, detail="proposal not found")
