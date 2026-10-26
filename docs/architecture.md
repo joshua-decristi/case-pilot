@@ -21,13 +21,13 @@ flowchart LR
 
 ## Ownership
 
-| Component | Owns | Does not own |
-|---|---|---|
-| Simulator | Synthetic enterprise records + follow-up task rows | Model calls, proposals, operator identity |
-| Backend | Runs, immutable proposals, approval state, traces, **live cost ledger** | Simulator SQLite |
-| CLI | Operator HTTP client | Business rules |
-| Operator UI (`frontend/`) | Local presentation of cases, findings, history, approve/reject/retry | Simulator access, credentials in assets, production hosting |
-| Evaluation | Offline grading + live opt-in runner (reads ledger; does not double-reserve) | Prompt tuning from labels |
+| Component                 | Owns                                                                         | Does not own                                                |
+| ------------------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| Simulator                 | Synthetic enterprise records + follow-up task rows                           | Model calls, proposals, operator identity                   |
+| Backend                   | Runs, immutable proposals, approval state, traces, **live cost ledger**      | Simulator SQLite                                            |
+| CLI                       | Operator HTTP client                                                         | Business rules                                              |
+| Operator UI (`frontend/`) | Local presentation of cases, findings, history, approve/reject/retry         | Simulator access, credentials in assets, production hosting |
+| Evaluation                | Offline grading + live opt-in runner (reads ledger; does not double-reserve) | Prompt tuning from labels                                   |
 
 ## Trust boundaries
 
