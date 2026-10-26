@@ -10,14 +10,14 @@ Architecture sketch: [`docs/architecture.md`](docs/architecture.md). Sanitized s
 
 ## Results snapshot (honest)
 
-| Gate                | Result                                                                                                                                                                                                                                                |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Offline quality     | **162** pytest cases collected (includes offline fail-closed, outage harness, task_id approval, grounded chat — no paid reruns); local gates green: Ruff check + format, mypy, pytest (**no paid calls**); operator-UI **frontend build** + reviews also passed                         |
-| Live smoke (latest) | **CASE-001** run `82e71af3-2bfa-4145-9b51-8afa58644fc4`: **status `completed`**, diagnosis **`missing_document`**, **5** grounded evidence rows, next_action **`request_missing_document`**, ledger settle **`$0.00169768`** (GLM-only, cost-guarded) |
-| Live smoke history  | Attempt 1 failed (async `wrap_model_call`); attempt 2 `indeterminate` / `escalate_to_human` (evidence validation) — retained as history only, not the headline                                                                                        |
-| Held-out live eval  | **N=8** (`evaluation` split): category **7/8**, evidence IDs **7/8**, action **6/8**, uncertainty **1/1**, hard fails **0/8** (unchanged)                                                                                                             |
+| Gate                | Result                                                                                                                                                                                                                                                                                                                       |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Offline quality     | **162** pytest cases collected (includes offline fail-closed, outage harness, task_id approval, grounded chat — no paid reruns); local gates green: Ruff check + format, mypy, pytest (**no paid calls**); operator-UI **frontend build** + reviews also passed                                                              |
+| Live smoke (latest) | **CASE-001** run `82e71af3-2bfa-4145-9b51-8afa58644fc4`: **status `completed`**, diagnosis **`missing_document`**, **5** grounded evidence rows, next_action **`request_missing_document`**, ledger settle **`$0.00169768`** (GLM-only, cost-guarded)                                                                        |
+| Live smoke history  | Attempt 1 failed (async `wrap_model_call`); attempt 2 `indeterminate` / `escalate_to_human` (evidence validation) — retained as history only, not the headline                                                                                                                                                               |
+| Held-out live eval  | **N=8** (`evaluation` split): category **7/8**, evidence IDs **7/8**, action **6/8**, uncertainty **1/1**, hard fails **0/8** (unchanged)                                                                                                                                                                                    |
 | Operator UI manual  | Checklist **verified** except execution recovery/retry (**unavailable** — no `approved`-unfinished / `execution_failed` state). Incl. **5** authorized live Investigates + offline loading/duplicate-guard/network-error checks (**no further paid calls**). Spec **not** fully validated while recovery remains unobserved. |
-| Ledger snapshot     | Cumulative **`$0.02582926`** USD (`evals/reports/cost_ledger.json`); prior baseline **`$0.01718485`**; operator-UI manual work **`$0.00864441`** (**5** live investigates) — **snapshot, not a promised unit cost**                                                                                                                         |
+| Ledger snapshot     | Cumulative **`$0.02582926`** USD (`evals/reports/cost_ledger.json`); prior baseline **`$0.01718485`**; operator-UI manual work **`$0.00864441`** (**5** live investigates) — **snapshot, not a promised unit cost**                                                                                                          |
 
 **Do not over-read these numbers:**
 
@@ -124,11 +124,11 @@ Open **http://127.0.0.1:5173** (or `http://127.0.0.1:$FRONTEND_PORT` when set). 
 
 **Credentials (local wiring only):**
 
-| Secret | Browser? | How |
-| --- | --- | --- |
-| `OPERATOR_TOKEN` (root `.env`) | **No** | Vite proxy attaches it **server-side** to approve/reject requests using **non-`VITE_`** config. Never embed in frontend assets or commit it. |
-| `SIMULATOR_SERVICE_TOKEN` | **No** | Backend→simulator only. UI must not call the simulator or receive this credential. |
-| `OPENROUTER_API_KEY` | **No** | Backend live runs only. |
+| Secret                         | Browser? | How                                                                                                                                          |
+| ------------------------------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OPERATOR_TOKEN` (root `.env`) | **No**   | Vite proxy attaches it **server-side** to approve/reject requests using **non-`VITE_`** config. Never embed in frontend assets or commit it. |
+| `SIMULATOR_SERVICE_TOKEN`      | **No**   | Backend→simulator only. UI must not call the simulator or receive this credential.                                                           |
+| `OPENROUTER_API_KEY`           | **No**   | Backend live runs only.                                                                                                                      |
 
 This preserves the existing operator-token gate. It is **not** a login system, multi-user auth, or a claim of production browser security.
 
@@ -149,20 +149,20 @@ This preserves the existing operator-token gate. It is **not** a login system, m
 
 Manual only — **no new automated UI tests** in this workstream. Against a running backend + simulator. Status after authorized manual pass (**5** live Investigate calls; ledger delta **`$0.00864441`**):
 
-| Item | Status |
-| --- | --- |
-| Open case list and select a case without the CLI | **Verified** |
-| See summary; start default investigation | **Verified** (5 live calls) |
-| Evidence, uncertainty, recommended action, exact proposed task on one page | **Verified** |
-| Approve → persisted **executed** outcome | **Verified** |
-| Reject pending proposal **with** a reason | **Verified** |
-| Reject pending proposal **without** a reason | **Verified** |
-| Reopen earlier investigations; earlier **pending** proposal preserved across a later run | **Verified** |
-| Reload pages; recover persisted history and **current** proposal statuses | **Verified** |
-| Local startup; CSRF / no service or operator credentials in frontend assets | **Verified** |
-| Honest **Investigating…** (controls disabled); in-mounted-UI duplicate Investigate guard (two clicks → one request via pending `fetch` intercept) | **Verified** (ephemeral browser; **no paid calls**) |
-| Manual network failure on Investigate → inline error; prior findings preserved; reload clean | **Verified** (forced failure; **no paid calls**) |
-| Failed/interrupted execution → explicit **Retry** via existing backend behavior | **Unavailable / not verified** — no `approved`-unfinished or `execution_failed` state observed; do **not** claim coverage |
+| Item                                                                                                                                              | Status                                                                                                                    |
+| ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Open case list and select a case without the CLI                                                                                                  | **Verified**                                                                                                              |
+| See summary; start default investigation                                                                                                          | **Verified** (5 live calls)                                                                                               |
+| Evidence, uncertainty, recommended action, exact proposed task on one page                                                                        | **Verified**                                                                                                              |
+| Approve → persisted **executed** outcome                                                                                                          | **Verified**                                                                                                              |
+| Reject pending proposal **with** a reason                                                                                                         | **Verified**                                                                                                              |
+| Reject pending proposal **without** a reason                                                                                                      | **Verified**                                                                                                              |
+| Reopen earlier investigations; earlier **pending** proposal preserved across a later run                                                          | **Verified**                                                                                                              |
+| Reload pages; recover persisted history and **current** proposal statuses                                                                         | **Verified**                                                                                                              |
+| Local startup; CSRF / no service or operator credentials in frontend assets                                                                       | **Verified**                                                                                                              |
+| Honest **Investigating…** (controls disabled); in-mounted-UI duplicate Investigate guard (two clicks → one request via pending `fetch` intercept) | **Verified** (ephemeral browser; **no paid calls**)                                                                       |
+| Manual network failure on Investigate → inline error; prior findings preserved; reload clean                                                      | **Verified** (forced failure; **no paid calls**)                                                                          |
+| Failed/interrupted execution → explicit **Retry** via existing backend behavior                                                                   | **Unavailable / not verified** — no `approved`-unfinished or `execution_failed` state observed; do **not** claim coverage |
 
 **Automated gates (separate from manual UI checklist):** **162** pytest + Ruff lint/format + mypy + frontend build; reviews passed.
 
@@ -271,15 +271,15 @@ Agent stack: **LangChain** (`create_agent`, tools, structured output, OpenRouter
 
 ## Data layout and independence limits
 
-| Path                             | Visibility                         | Purpose                                                                     |
-| -------------------------------- | ---------------------------------- | --------------------------------------------------------------------------- |
-| `fixtures/enterprise/cases.json` | Model-visible via tools after seed | Synthetic enterprise source records                                         |
-| `evals/ground_truth/labels.json` | Evaluator-only                     | Diagnoses, evidence predicates, actions, **development / evaluation** split |
-| `evals/reports/`                 | Generated (gitignored except keep) | Live reports + `cost_ledger.json`                                           |
-| `docs/sample-evaluation.json`    | Curated sanitized sample           | Compact honest grades/metadata for portfolio readers                        |
-| `SIMULATOR_DB_PATH`              | Simulator                          | Seeded records + executed tasks                                             |
+| Path                             | Visibility                         | Purpose                                                                       |
+| -------------------------------- | ---------------------------------- | ----------------------------------------------------------------------------- |
+| `fixtures/enterprise/cases.json` | Model-visible via tools after seed | Synthetic enterprise source records                                           |
+| `evals/ground_truth/labels.json` | Evaluator-only                     | Diagnoses, evidence predicates, actions, **development / evaluation** split   |
+| `evals/reports/`                 | Generated (gitignored except keep) | Live reports + `cost_ledger.json`                                             |
+| `docs/sample-evaluation.json`    | Curated sanitized sample           | Compact honest grades/metadata for portfolio readers                          |
+| `SIMULATOR_DB_PATH`              | Simulator                          | Seeded records + executed tasks                                               |
 | `BACKEND_DB_PATH`                | Backend                            | Runs, proposals, approval/audit state, conversation turns, evidence snapshots |
-| `TRACE_DIR`                      | Backend                            | JSONL traces (no secrets/tokens)                                            |
+| `TRACE_DIR`                      | Backend                            | JSONL traces (no secrets/tokens)                                              |
 
 **Limitations:**
 
