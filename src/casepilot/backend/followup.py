@@ -13,7 +13,6 @@ from collections.abc import Sequence
 from typing import Any
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import ModelCallLimitMiddleware, ToolCallLimitMiddleware
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage
@@ -21,6 +20,8 @@ from pydantic import BaseModel
 
 from casepilot.backend.agent import (
     ModelFactory,
+    _classify_runtime_failure,
+    _limit_middleware,
     build_follow_up_read_tools,
     default_model_factory,
 )
@@ -32,7 +33,6 @@ from casepilot.backend.cost_guard import (
     estimate_text_tokens,
     guard_live_call,
     is_live_model,
-    make_live_guard_middleware,
 )
 from casepilot.backend.db import BackendStore
 from casepilot.backend.evidence import (
@@ -42,6 +42,15 @@ from casepilot.backend.evidence import (
     RetrievedIndex,
     attribute_run_evidence,
     render_follow_up_answer,
+)
+from casepilot.backend.pilot_observability import (
+    allowed_tool_name_set,
+    capture_model_turn_batches,
+    capture_tool_attempts_on_error,
+    emit_follow_up_output,
+    emit_pre_turn_context,
+    resolve_ai_messages,
+    scan_unknown_tool_calls,
 )
 from casepilot.backend.trace import TraceWriter
 from casepilot.evaluation.cost import ALLOWED_LIVE_MODEL, CostPause
@@ -424,6 +433,7 @@ async def run_follow_up(
             usage=usage,
             cost_usd=cost,
             provider_model=_usage_provider_model(usage),
+            exposure_instrumented=True,
         )
 
     def _succeed(
@@ -439,13 +449,14 @@ async def run_follow_up(
             cost_usd=cost,
             provider_model=_usage_provider_model(usage),
             source_fact_count=len(answer.source_facts),
+            exposure_instrumented=True,
         )
 
     factory = model_factory or default_model_factory
     try:
         model = factory(settings)
     except CostPause as exc:
-        _fail(str(exc))
+        _fail(_classify_runtime_failure(exc))
         return
     except Exception as exc:  # noqa: BLE001
         _fail(f"model factory error: {exc}")
@@ -461,7 +472,7 @@ async def run_follow_up(
             settings=settings,
         )
     except CostPause as exc:
-        _fail(str(exc))
+        _fail(_classify_runtime_failure(exc))
         return
 
     try:
@@ -474,19 +485,24 @@ async def run_follow_up(
             question=question,
         )
     except CostPause as exc:
+        err = _classify_runtime_failure(exc)
         close_live_reservation(
             ledger,
             reservation,
             tracker=tracker,
             messages=None,
             trace_emit=trace.emit,
-            detail=str(exc),
+            detail=err,
         )
-        _fail(str(exc))
+        _fail(err)
         return
 
     if truncated:
         trace.emit("context_truncated", notice=CONTEXT_TRUNCATION_NOTICE)
+
+    # Actual post-filter/pre-turn model context (established snapshots only).
+    # Absent this event, pilot coverage stays not_assessed — do not invent proof.
+    emit_pre_turn_context(trace.emit, established, truncated=truncated)
 
     tools = build_follow_up_read_tools(
         client,
@@ -498,18 +514,9 @@ async def run_follow_up(
         attempt_id=attempt_id,
         catalog=catalog,
     )
-    middleware: list[Any] = [
-        ModelCallLimitMiddleware(
-            run_limit=settings.max_model_turns,
-            exit_behavior="error",
-        ),
-        ToolCallLimitMiddleware(
-            run_limit=settings.max_tool_calls,
-            exit_behavior="error",
-        ),
-    ]
-    if is_live_model(model):
-        middleware.insert(0, make_live_guard_middleware(tracker))
+    # Structured-output tool name from ToolStrategy(FollowUpAgentOutput).
+    allowed_tool_names = allowed_tool_name_set(tools, FollowUpAgentOutput.__name__)
+    middleware = _limit_middleware(settings, tracker, model)
 
     agent = create_agent(
         model,
@@ -555,9 +562,21 @@ async def run_follow_up(
             or type(exc).__name__ == "CancelledError"
             or "CancelledError" in msg
         )
-        partial: list[BaseMessage] | None = None
-        if raw and isinstance(raw.get("messages"), list):
-            partial = raw["messages"]
+        # raw is None when middleware aborts mid-turn; tracker may still hold AI turns.
+        partial = resolve_ai_messages(
+            raw.get("messages") if raw and isinstance(raw.get("messages"), list) else None,
+            tracker,
+        )
+        # All AI turns first (incl. structured-output attempts), then last-batch error proof.
+        capture_model_turn_batches(trace, partial, case_id=run.case_id, run_id=run_id)
+        capture_tool_attempts_on_error(
+            trace,
+            partial,
+            run.case_id,
+            allowed_tool_names,
+            exc,
+            run_id=run_id,
+        )
         if cancelled:
             usage, cost = close_live_reservation(
                 ledger,
@@ -569,12 +588,7 @@ async def run_follow_up(
             )
             _fail("follow-up cancelled", usage=usage, cost=cost)
             return
-        if "limit" in msg.lower() or "budget" in msg.lower() or "recursion" in msg.lower():
-            err = f"execution budget exhausted: {exc}"
-        elif isinstance(exc, CostPause) or "input bound exceeded" in msg:
-            err = f"cost/input guard: {exc}"
-        else:
-            err = f"agent error: {exc}"
+        err = _classify_runtime_failure(exc)
         usage, cost = close_live_reservation(
             ledger,
             reservation,
@@ -596,6 +610,19 @@ async def run_follow_up(
         detail="ok",
     )
 
+    # End-of-run AIMessage batches (names/count; includes structured-output tools).
+    ai_msgs = resolve_ai_messages(messages, tracker)
+    capture_model_turn_batches(trace, ai_msgs, case_id=run.case_id, run_id=run_id)
+
+    # Blocked unknown tool calls must be observable (pilot safety). Once only.
+    scan_unknown_tool_calls(
+        ai_msgs,
+        allowed_tool_names,
+        trace.emit,
+        case_id=run.case_id,
+        run_id=run_id,
+    )
+
     # Refresh catalog with anything tools persisted.
     for s in store.list_evidence_snapshots(run_id):
         catalog.setdefault(s.snapshot_id, s)
@@ -605,5 +632,15 @@ async def run_follow_up(
         _fail("missing structured FollowUpAgentOutput", usage=usage, cost=cost)
         return
 
-    answer = ground_follow_up_output(finding, catalog)
-    _succeed(answer, usage=usage, cost=cost)
+    # Untrusted model refs first; render; emit once with reject_code (no safety change).
+    rendered = render_follow_up_answer(finding, catalog)
+    emit_follow_up_output(
+        trace.emit,
+        finding,
+        ok=rendered.ok,
+        reject_code=(rendered.reject_code.value if rendered.reject_code is not None else None),
+        case_id=run.case_id,
+        run_id=run_id,
+        attempt_id=attempt_id,
+    )
+    _succeed(rendered.answer, usage=usage, cost=cost)
