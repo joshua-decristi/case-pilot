@@ -244,6 +244,14 @@ Useful flags: `--split {development,evaluation,all}`, `--max-cases` (live requir
 
 Grading is rule-based against `evals/ground_truth/labels.json` (not an LLM judge). Labels are for scoring — **do not tune prompts against held-out labels** and then claim unseen performance.
 
+**Scenario pilot** (paid; separate mode):
+
+```bash
+uv run python -m casepilot.evaluation --scenario-pilot --pilot-live --budget-usd 5
+```
+
+Six development scenarios × 3 reps + calibration gate. Requires explicit `--pilot-live`. Shared canonical ledger (`CASEPILOT_COST_LEDGER_PATH` / default `evals/reports/cost_ledger.json`) must match backend and CLI; local DB traces must match. Fresh `--cohort-id` after instrumentation fixes — never selectively replace started slots (resume unstarted only). Generated reports are ignored. Judge is same-model (GLM) and fallible — not ground truth.
+
 ## Grounding and approval controls
 
 - **Untrusted evidence:** retrieved records are data, not instructions.
