@@ -34,6 +34,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 
 from casepilot.backend.trace import _redact
@@ -320,12 +321,28 @@ def _check_one(ev: Evidence, index: RetrievedIndex) -> tuple[bool, str]:
 # ---------------------------------------------------------------------------
 
 
+class FollowUpRenderRejectCode(StrEnum):
+    """Stable reject codes for ``render_follow_up_answer`` (no model text)."""
+
+    NO_CONTENT = "no_content"
+    INVALID_NOTES = "invalid_notes"
+    EMPTY_LOCAL_ID = "empty_local_id"
+    DUPLICATE_LOCAL_ID = "duplicate_local_id"
+    UNKNOWN_SNAPSHOT = "unknown_snapshot"
+    FIELD_PATH_MISMATCH = "field_path_mismatch"
+    UNRENDERABLE_VALUE = "unrenderable_value"
+    INVALID_INTERPRETATION_KIND = "invalid_interpretation_kind"
+    EMPTY_INTERPRETATION_CITES = "empty_interpretation_cites"
+    UNKNOWN_INTERPRETATION_CITE = "unknown_interpretation_cite"
+
+
 @dataclass(frozen=True)
 class FollowUpRenderResult:
     """Result of validating ``FollowUpAgentOutput`` against server snapshots."""
 
     ok: bool
     answer: FollowUpAnswer
+    reject_code: FollowUpRenderRejectCode | None = None
 
 
 def render_source_fact(
@@ -396,33 +413,43 @@ def render_follow_up_answer(
     """
     catalog = snapshots if isinstance(snapshots, Mapping) else snapshots_by_id(snapshots)
     # Merge caller codes + model-requested codes; never free-text model notes.
-    notes = resolve_server_notes([*(server_notes or ()), *output.notes])
+    requested_notes = [*(server_notes or ()), *output.notes]
+    notes = resolve_server_notes(requested_notes)
 
     if not output.source_facts and not output.interpretations:
         if notes:
             return FollowUpRenderResult(ok=True, answer=FollowUpAnswer(notes=notes))
-        return _safe_fail()
+        if requested_notes:
+            return _safe_fail(FollowUpRenderRejectCode.INVALID_NOTES)
+        return _safe_fail(FollowUpRenderRejectCode.NO_CONTENT)
 
     rendered: list[RenderedSourceFact] = []
     local_ids: set[str] = set()
 
     for claim in output.source_facts:
-        if not claim.local_id or claim.local_id in local_ids:
-            return _safe_fail()
+        if not claim.local_id:
+            return _safe_fail(FollowUpRenderRejectCode.EMPTY_LOCAL_ID)
+        if claim.local_id in local_ids:
+            return _safe_fail(FollowUpRenderRejectCode.DUPLICATE_LOCAL_ID)
         fact = render_source_fact(claim, catalog)
         if fact is None:
-            return _safe_fail()
+            snap = catalog.get(claim.snapshot_id)
+            if snap is None:
+                return _safe_fail(FollowUpRenderRejectCode.UNKNOWN_SNAPSHOT)
+            if claim.field_path.strip() != snap.field_path:
+                return _safe_fail(FollowUpRenderRejectCode.FIELD_PATH_MISMATCH)
+            return _safe_fail(FollowUpRenderRejectCode.UNRENDERABLE_VALUE)
         local_ids.add(claim.local_id)
         rendered.append(fact)
 
     interpretations: list[InterpretationBlock] = []
     for block in output.interpretations:
         if block.kind not in (InterpretationKind.INFERENCE, InterpretationKind.UNCERTAINTY):
-            return _safe_fail()
+            return _safe_fail(FollowUpRenderRejectCode.INVALID_INTERPRETATION_KIND)
         if not block.cites:
-            return _safe_fail()
+            return _safe_fail(FollowUpRenderRejectCode.EMPTY_INTERPRETATION_CITES)
         if any(c not in local_ids for c in block.cites):
-            return _safe_fail()
+            return _safe_fail(FollowUpRenderRejectCode.UNKNOWN_INTERPRETATION_CITE)
         interpretations.append(
             InterpretationBlock(text=block.text, cites=list(block.cites), kind=block.kind)
         )
@@ -437,10 +464,11 @@ def render_follow_up_answer(
     )
 
 
-def _safe_fail() -> FollowUpRenderResult:
+def _safe_fail(code: FollowUpRenderRejectCode) -> FollowUpRenderResult:
     return FollowUpRenderResult(
         ok=False,
         answer=FollowUpAnswer(notes=[SAFE_UNCERTAINTY]),
+        reject_code=code,
     )
 
 
