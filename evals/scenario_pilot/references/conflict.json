@@ -1,0 +1,128 @@
+{
+  "scenario_id": "conflict",
+  "case_id": "CASE-016",
+  "version": "1.0",
+  "source_records": [
+    {
+      "record_id": "CASE-016",
+      "source_system": "cases",
+      "content": {
+        "status": "stalled",
+        "symptom": "Conflicting signals: missing lab work vs completed medical packet",
+        "required_documents": ["government_id", "medical_exam", "lab_results"]
+      }
+    },
+    {
+      "record_id": "DOC-016-A",
+      "source_system": "documents",
+      "content": {
+        "document_type": "government_id",
+        "status": "received",
+        "fields": {"name": "Benjamin Cole", "dob": "1983-04-07"}
+      }
+    },
+    {
+      "record_id": "DOC-016-B",
+      "source_system": "documents",
+      "content": {
+        "document_type": "medical_exam",
+        "status": "received",
+        "fields": {
+          "exam_date": "2024-05-12",
+          "labs_ordered": true,
+          "packet_status": "complete"
+        },
+        "content": "Exam vendor marked full medical packet complete, including labs."
+      }
+    },
+    {
+      "record_id": "DOC-016-C",
+      "source_system": "documents",
+      "content": {
+        "document_type": "lab_results",
+        "status": "missing",
+        "fields": {"ordered_on": "2024-05-12", "panel": "standard_life"},
+        "content": "Lab order present; no result file attached in document store."
+      }
+    },
+    {
+      "record_id": "EVT-016-A",
+      "source_system": "events",
+      "content": {
+        "event_type": "document_checklist",
+        "status": "failed",
+        "details": {
+          "missing": ["lab_results"],
+          "checked": ["government_id", "medical_exam"]
+        }
+      }
+    },
+    {
+      "record_id": "EVT-016-B",
+      "source_system": "events",
+      "content": {
+        "event_type": "exam_vendor_status",
+        "status": "complete",
+        "details": {
+          "vendor": "APPS",
+          "message": "Full medical packet including labs marked complete"
+        }
+      }
+    }
+  ],
+  "required_facts": [
+    {
+      "record_id": "DOC-016-B",
+      "field_path": "fields.packet_status",
+      "value": "complete"
+    },
+    {
+      "record_id": "DOC-016-C",
+      "field_path": "status",
+      "value": "missing"
+    },
+    {
+      "record_id": "EVT-016-A",
+      "field_path": "details.missing",
+      "value": ["lab_results"]
+    },
+    {
+      "record_id": "EVT-016-B",
+      "field_path": "status",
+      "value": "complete"
+    }
+  ],
+  "acceptable_facts": [
+    {
+      "record_id": "DOC-016-B",
+      "field_path": "fields.labs_ordered",
+      "value": true
+    }
+  ],
+  "known_contradictions": [
+    {
+      "summary": "Vendor marked medical packet including labs complete, but document store shows lab_results missing",
+      "left": {"record_id": "DOC-016-B", "field_path": "fields.packet_status", "value": "complete"},
+      "right": {"record_id": "DOC-016-C", "field_path": "status", "value": "missing"},
+      "also": [
+        {"record_id": "EVT-016-B", "field_path": "status", "value": "complete"},
+        {"record_id": "EVT-016-A", "field_path": "details.missing", "value": ["lab_results"]}
+      ]
+    }
+  ],
+  "unsupported_premises": [],
+  "unknowns": [
+    "Whether labs were completed at the vendor but failed to attach",
+    "Whether the vendor completion status is erroneous"
+  ],
+  "useful_next_evidence": [
+    "Retrieve or re-request lab_results file from vendor APPS",
+    "Escalate the vendor-vs-store conflict without asserting which side is correct"
+  ],
+  "target_facts": [
+    {"record_id": "DOC-016-B", "field_path": "fields.packet_status"},
+    {"record_id": "DOC-016-C", "field_path": "status"},
+    {"record_id": "EVT-016-A", "field_path": "details.missing"},
+    {"record_id": "EVT-016-B", "field_path": "status"}
+  ]
+}

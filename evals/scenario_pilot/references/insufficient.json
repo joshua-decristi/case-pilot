@@ -1,0 +1,128 @@
+{
+  "scenario_id": "insufficient",
+  "case_id": "CASE-013",
+  "version": "1.0",
+  "source_records": [
+    {
+      "record_id": "CASE-013",
+      "source_system": "cases",
+      "content": {
+        "status": "stalled",
+        "symptom": "Payment authorization job failed during premium setup"
+      }
+    },
+    {
+      "record_id": "DOC-013-A",
+      "source_system": "documents",
+      "content": {"document_type": "government_id", "status": "received"}
+    },
+    {
+      "record_id": "DOC-013-B",
+      "source_system": "documents",
+      "content": {
+        "document_type": "bank_verification",
+        "status": "received",
+        "fields": {
+          "account_holder": "Olivia Grant",
+          "routing_last4": "0210",
+          "status": "verified"
+        },
+        "content": "Bank account verified for draft."
+      }
+    },
+    {
+      "record_id": "DOC-013-C",
+      "source_system": "documents",
+      "content": {
+        "document_type": "beneficiary_form",
+        "status": "received",
+        "fields": {"primary_beneficiary": "Peter Grant"}
+      }
+    },
+    {
+      "record_id": "EVT-013-A",
+      "source_system": "events",
+      "content": {
+        "event_type": "payment_authorization",
+        "status": "error",
+        "details": {
+          "job": "premium-setup",
+          "error_code": "ACH_GATEWAY_5XX",
+          "message": "Upstream payment gateway 502"
+        }
+      }
+    },
+    {
+      "record_id": "EVT-013-B",
+      "source_system": "events",
+      "content": {
+        "event_type": "payment_authorization_retry",
+        "status": "error",
+        "details": {
+          "job": "premium-setup",
+          "error_code": "ACH_GATEWAY_5XX",
+          "attempt": 3
+        }
+      }
+    },
+    {
+      "record_id": "EVT-013-C",
+      "source_system": "events",
+      "content": {
+        "event_type": "document_checklist",
+        "status": "passed",
+        "details": {"missing": []}
+      }
+    }
+  ],
+  "required_facts": [
+    {
+      "record_id": "DOC-013-B",
+      "field_path": "fields.status",
+      "value": "verified"
+    },
+    {
+      "record_id": "EVT-013-A",
+      "field_path": "details.error_code",
+      "value": "ACH_GATEWAY_5XX"
+    },
+    {
+      "record_id": "EVT-013-A",
+      "field_path": "details.message",
+      "value": "Upstream payment gateway 502"
+    },
+    {
+      "record_id": "EVT-013-C",
+      "field_path": "status",
+      "value": "passed"
+    }
+  ],
+  "acceptable_facts": [
+    {
+      "record_id": "EVT-013-B",
+      "field_path": "details.attempt",
+      "value": 3
+    }
+  ],
+  "known_contradictions": [],
+  "unsupported_premises": [
+    {
+      "premise": "The applicant bank confirmed payment completed",
+      "why_unsupported": "DOC-013-B verifies the account for draft only; EVT-013-A/B show gateway 5xx with no payment confirmation record"
+    }
+  ],
+  "unknowns": [
+    "Whether any premium draft ultimately settled after the gateway errors",
+    "Whether the bank issued a separate confirmation outside these records"
+  ],
+  "useful_next_evidence": [
+    "Obtain payment-gateway settlement or ACH return detail for premium-setup",
+    "Do not treat bank_verification status=verified as payment confirmation"
+  ],
+  "target_facts": [
+    {"record_id": "DOC-013-B", "field_path": "fields.status"},
+    {"record_id": "EVT-013-A", "field_path": "details.error_code"},
+    {"record_id": "EVT-013-A", "field_path": "details.message"},
+    {"record_id": "EVT-013-C", "field_path": "status"}
+  ]
+}

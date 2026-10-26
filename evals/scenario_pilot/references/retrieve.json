@@ -1,0 +1,123 @@
+{
+  "scenario_id": "retrieve",
+  "case_id": "CASE-011",
+  "version": "1.0",
+  "source_records": [
+    {
+      "record_id": "CASE-011",
+      "source_system": "cases",
+      "content": {
+        "status": "stalled",
+        "symptom": "Case stuck after automated underwriting engine error"
+      }
+    },
+    {
+      "record_id": "DOC-011-A",
+      "source_system": "documents",
+      "content": {"document_type": "government_id", "status": "received"}
+    },
+    {
+      "record_id": "DOC-011-B",
+      "source_system": "documents",
+      "content": {
+        "document_type": "medical_exam",
+        "status": "received",
+        "fields": {"exam_date": "2024-05-06", "result": "within_limits"}
+      }
+    },
+    {
+      "record_id": "DOC-011-C",
+      "source_system": "documents",
+      "content": {
+        "document_type": "beneficiary_form",
+        "status": "received",
+        "fields": {"primary_beneficiary": "Adam Brooks"}
+      }
+    },
+    {
+      "record_id": "EVT-011-A",
+      "source_system": "events",
+      "content": {
+        "event_type": "rules_engine",
+        "status": "error",
+        "details": {
+          "engine": "AUW-Core",
+          "error_code": "RULE_EVAL_TIMEOUT",
+          "message": "Rule pack v3.4 timed out after 30s"
+        }
+      }
+    },
+    {
+      "record_id": "EVT-011-B",
+      "source_system": "events",
+      "content": {
+        "event_type": "rules_engine_retry",
+        "status": "error",
+        "details": {
+          "engine": "AUW-Core",
+          "error_code": "RULE_EVAL_TIMEOUT",
+          "attempt": 2
+        }
+      }
+    },
+    {
+      "record_id": "EVT-011-C",
+      "source_system": "events",
+      "content": {
+        "event_type": "document_checklist",
+        "status": "passed",
+        "details": {"missing": []}
+      }
+    }
+  ],
+  "required_facts": [
+    {
+      "record_id": "EVT-011-A",
+      "field_path": "details.error_code",
+      "value": "RULE_EVAL_TIMEOUT"
+    },
+    {
+      "record_id": "EVT-011-A",
+      "field_path": "details.message",
+      "value": "Rule pack v3.4 timed out after 30s"
+    },
+    {
+      "record_id": "EVT-011-B",
+      "field_path": "details.error_code",
+      "value": "RULE_EVAL_TIMEOUT"
+    },
+    {
+      "record_id": "EVT-011-C",
+      "field_path": "status",
+      "value": "passed"
+    }
+  ],
+  "acceptable_facts": [
+    {
+      "record_id": "EVT-011-A",
+      "field_path": "details.engine",
+      "value": "AUW-Core"
+    },
+    {
+      "record_id": "EVT-011-B",
+      "field_path": "details.attempt",
+      "value": 2
+    }
+  ],
+  "known_contradictions": [],
+  "unsupported_premises": [],
+  "unknowns": [
+    "Root cause of the AUW-Core timeout beyond the recorded error",
+    "Whether a later retry succeeded outside these events"
+  ],
+  "useful_next_evidence": [
+    "Inspect AUW-Core logs for rule pack v3.4 around the timeout",
+    "Retry or investigate processing for the RULE_EVAL_TIMEOUT failure"
+  ],
+  "target_facts": [
+    {"record_id": "EVT-011-A", "field_path": "details.error_code"},
+    {"record_id": "EVT-011-A", "field_path": "details.message"},
+    {"record_id": "EVT-011-B", "field_path": "details.error_code"},
+    {"record_id": "EVT-011-C", "field_path": "status"}
+  ]
+}

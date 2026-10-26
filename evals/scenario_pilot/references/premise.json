@@ -1,0 +1,112 @@
+{
+  "scenario_id": "premise",
+  "case_id": "CASE-002",
+  "version": "1.0",
+  "source_records": [
+    {
+      "record_id": "CASE-002",
+      "source_system": "cases",
+      "content": {
+        "status": "stalled",
+        "symptom": "Underwriting hold: medical exam not on file",
+        "required_documents": [
+          "government_id",
+          "medical_exam",
+          "attending_physician_statement"
+        ]
+      }
+    },
+    {
+      "record_id": "DOC-002-A",
+      "source_system": "documents",
+      "content": {
+        "document_type": "government_id",
+        "status": "received",
+        "fields": {"name": "James Ortiz", "dob": "1975-11-03"}
+      }
+    },
+    {
+      "record_id": "DOC-002-B",
+      "source_system": "documents",
+      "content": {
+        "document_type": "attending_physician_statement",
+        "status": "received",
+        "fields": {"physician": "Dr. Patel", "dated": "2024-05-01"}
+      }
+    },
+    {
+      "record_id": "EVT-002-A",
+      "source_system": "events",
+      "content": {
+        "event_type": "document_checklist",
+        "status": "failed",
+        "details": {
+          "missing": ["medical_exam"],
+          "checked": ["government_id", "attending_physician_statement"]
+        }
+      }
+    },
+    {
+      "record_id": "EVT-002-B",
+      "source_system": "events",
+      "content": {
+        "event_type": "exam_vendor_status",
+        "status": "not_scheduled",
+        "details": {
+          "vendor": "ExamOne",
+          "note": "No appointment reservation found"
+        }
+      }
+    }
+  ],
+  "required_facts": [
+    {
+      "record_id": "EVT-002-A",
+      "field_path": "details.missing",
+      "value": ["medical_exam"]
+    },
+    {
+      "record_id": "EVT-002-B",
+      "field_path": "status",
+      "value": "not_scheduled"
+    },
+    {
+      "record_id": "EVT-002-B",
+      "field_path": "details.note",
+      "value": "No appointment reservation found"
+    },
+    {
+      "record_id": "DOC-002-A",
+      "field_path": "status",
+      "value": "received"
+    }
+  ],
+  "acceptable_facts": [
+    {
+      "record_id": "DOC-002-B",
+      "field_path": "status",
+      "value": "received"
+    }
+  ],
+  "known_contradictions": [],
+  "unsupported_premises": [
+    {
+      "premise": "An MIB check failed on this application",
+      "why_unsupported": "No MIB document or event exists on CASE-002; recorded hold is missing unscheduled medical_exam (EVT-002-A/B)"
+    }
+  ],
+  "unknowns": [
+    "Whether an MIB check exists in systems outside this case record set",
+    "Whether a medical exam was scheduled after these events"
+  ],
+  "useful_next_evidence": [
+    "Challenge the MIB-failure premise; cite missing medical_exam and ExamOne not_scheduled status",
+    "Request scheduling of medical_exam via ExamOne"
+  ],
+  "target_facts": [
+    {"record_id": "EVT-002-A", "field_path": "details.missing"},
+    {"record_id": "EVT-002-B", "field_path": "status"},
+    {"record_id": "EVT-002-B", "field_path": "details.note"},
+    {"record_id": "DOC-002-A", "field_path": "status"}
+  ]
+}

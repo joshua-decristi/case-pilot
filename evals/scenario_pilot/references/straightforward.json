@@ -1,0 +1,103 @@
+{
+  "scenario_id": "straightforward",
+  "case_id": "CASE-001",
+  "version": "1.0",
+  "source_records": [
+    {
+      "record_id": "CASE-001",
+      "source_system": "cases",
+      "content": {
+        "status": "stalled",
+        "symptom": "New business application blocked pending required documentation",
+        "required_documents": ["government_id", "proof_of_income", "beneficiary_form"]
+      }
+    },
+    {
+      "record_id": "DOC-001-A",
+      "source_system": "documents",
+      "content": {
+        "document_type": "government_id",
+        "status": "received",
+        "fields": {"name": "Maria Chen", "dob": "1988-04-12", "id_number_last4": "4821"}
+      }
+    },
+    {
+      "record_id": "DOC-001-B",
+      "source_system": "documents",
+      "content": {
+        "document_type": "beneficiary_form",
+        "status": "received",
+        "fields": {"primary_beneficiary": "Wei Chen", "relationship": "spouse"}
+      }
+    },
+    {
+      "record_id": "EVT-001-A",
+      "source_system": "events",
+      "content": {
+        "event_type": "document_checklist",
+        "status": "failed",
+        "details": {
+          "missing": ["proof_of_income"],
+          "checked": ["government_id", "beneficiary_form"]
+        }
+      }
+    },
+    {
+      "record_id": "EVT-001-B",
+      "source_system": "events",
+      "content": {
+        "event_type": "underwriting_gate",
+        "status": "blocked",
+        "details": {
+          "reason": "required_document_absent",
+          "document_type": "proof_of_income"
+        }
+      }
+    }
+  ],
+  "required_facts": [
+    {
+      "record_id": "EVT-001-A",
+      "field_path": "details.missing",
+      "value": ["proof_of_income"]
+    },
+    {
+      "record_id": "EVT-001-B",
+      "field_path": "details.document_type",
+      "value": "proof_of_income"
+    },
+    {
+      "record_id": "DOC-001-A",
+      "field_path": "status",
+      "value": "received"
+    },
+    {
+      "record_id": "DOC-001-B",
+      "field_path": "status",
+      "value": "received"
+    }
+  ],
+  "acceptable_facts": [
+    {
+      "record_id": "CASE-001",
+      "field_path": "status",
+      "value": "stalled"
+    }
+  ],
+  "known_contradictions": [],
+  "unsupported_premises": [],
+  "unknowns": [
+    "Whether the applicant can produce proof_of_income",
+    "Whether any proof_of_income was submitted outside the document store"
+  ],
+  "useful_next_evidence": [
+    "Request proof_of_income from the applicant or producer",
+    "Confirm no alternate income documentation is pending imaging"
+  ],
+  "target_facts": [
+    {"record_id": "EVT-001-A", "field_path": "details.missing"},
+    {"record_id": "EVT-001-B", "field_path": "details.document_type"},
+    {"record_id": "DOC-001-A", "field_path": "status"},
+    {"record_id": "DOC-001-B", "field_path": "status"}
+  ]
+}
