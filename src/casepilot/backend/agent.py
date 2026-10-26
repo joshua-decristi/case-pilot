@@ -6,22 +6,30 @@ import asyncio
 import hashlib
 import json
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import ModelCallLimitMiddleware, ToolCallLimitMiddleware
+from langchain.agents.middleware import (
+    AgentMiddleware,
+    ModelCallLimitMiddleware,
+    ToolCallLimitMiddleware,
+)
+from langchain.agents.middleware.model_call_limit import ModelCallLimitExceededError
+from langchain.agents.middleware.tool_call_limit import ToolCallLimitExceededError
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_core.tools import tool
+from langgraph.errors import GraphRecursionError
 from pydantic import BaseModel, Field
 
 from casepilot.backend.client import SimulatorClient, SimulatorError
 from casepilot.backend.cost_guard import (
     LiveCallTracker,
+    _capture_model_response,
     build_live_chat_model,
     close_live_reservation,
     guard_live_call,
@@ -37,6 +45,15 @@ from casepilot.backend.evidence import (
     validate_evidence,
 )
 from casepilot.backend.hooks import TEST_MODE_ENV, is_test_mode, resolve_test_model
+from casepilot.backend.pilot_observability import (
+    allowed_tool_name_set,
+    capture_leaf_exposure_facts,
+    capture_model_turn_batches,
+    capture_tool_attempts_on_error,
+    resolve_ai_messages,
+    scan_unknown_tool_calls,
+    tool_exposure_facts,
+)
 from casepilot.backend.trace import TraceWriter
 from casepilot.evaluation.cost import ALLOWED_LIVE_MODEL, CostPause
 from casepilot.shared.config import Settings
@@ -105,6 +122,63 @@ class InvestigationOutcome:
     provider_model: str | None = None
 
 
+def _classify_runtime_failure(exc: BaseException) -> str:
+    """Label runtime failures: per-run limits vs spend pause vs generic.
+
+    Tool/model/graph/input-bound limits use ``execution limit exceeded:`` and must
+    NOT stop the cohort. True ``CostPause`` (ledger/pricing) uses exact prefix
+    ``cost pause:`` for ``classify_spend_pause``. Input-bound phrases only — not
+    bare ``limit``/``budget`` substrings.
+    """
+    msg = str(exc).lower()
+    if isinstance(
+        exc,
+        (ToolCallLimitExceededError, ModelCallLimitExceededError, GraphRecursionError),
+    ):
+        return f"execution limit exceeded: {exc}"
+    # Per-run input cap (CostPause or plain) — not a global money pause.
+    if "input bound exceeded" in msg or "exceeds input bound" in msg:
+        return f"execution limit exceeded: {exc}"
+    if isinstance(exc, CostPause):
+        return f"cost pause: {exc}"
+    return f"agent error: {exc}"
+
+
+class _CaptureAiMiddleware(AgentMiddleware[Any, Any]):
+    """Record model AIMessages onto tracker (scripted path; live uses cost guard)."""
+
+    def __init__(self, tracker: LiveCallTracker) -> None:
+        super().__init__()
+        self.tracker = tracker
+
+    def wrap_model_call(self, request: Any, handler: Callable[[Any], Any]) -> Any:
+        return _capture_model_response(self.tracker, handler(request))
+
+    async def awrap_model_call(self, request: Any, handler: Callable[[Any], Awaitable[Any]]) -> Any:
+        return _capture_model_response(self.tracker, await handler(request))
+
+
+def _limit_middleware(
+    settings: Settings, tracker: LiveCallTracker, model: BaseChatModel
+) -> list[Any]:
+    """Model/tool call limits + AI capture (live guard or scripted capture)."""
+    middleware: list[Any] = [
+        ModelCallLimitMiddleware(
+            run_limit=settings.max_model_turns,
+            exit_behavior="error",
+        ),
+        ToolCallLimitMiddleware(
+            run_limit=settings.max_tool_calls,
+            exit_behavior="error",
+        ),
+    ]
+    if is_live_model(model):
+        middleware.insert(0, make_live_guard_middleware(tracker))
+    else:
+        middleware.insert(0, _CaptureAiMiddleware(tracker))
+    return middleware
+
+
 def default_model_factory(settings: Settings) -> BaseChatModel:
     """Live OpenRouter model. Test hooks take precedence when installed.
 
@@ -149,8 +223,20 @@ def build_case_read_tools(
 
     Shared by investigation and follow-up agents. Caller sets ``index.context``
     provenance (run_id, origin, attempt_id) before invocation. Call-count budgets
-    are enforced only via middleware.
+    are enforced only via middleware. Tool events include ``facts`` leaf fields
+    actually returned to the model (pilot observability / judge evidence).
     """
+
+    def _emit_tool(name: str, *, record_ids: list[str], before: int) -> None:
+        new_caps = index.captures[before:]
+        trace.emit(
+            "tool",
+            name=name,
+            inputs={},
+            record_ids=record_ids,
+            captures=len(index.captures),
+            facts=capture_leaf_exposure_facts(new_caps, provenance="original_run"),
+        )
 
     @tool
     async def get_case() -> dict[str, Any]:
@@ -163,15 +249,10 @@ def build_case_read_tools(
         """
         try:
             record = await client.get_case(case_id)
+            before = len(index.captures)
             index.note_case(record)
             index.tool_calls += 1
-            trace.emit(
-                "tool",
-                name="get_case",
-                inputs={},
-                record_ids=[case_id],
-                captures=len(index.captures),
-            )
+            _emit_tool("get_case", record_ids=[case_id], before=before)
             return record.model_dump(mode="json")
         except SimulatorError as exc:
             trace.emit("tool_error", name="get_case", error=str(exc))
@@ -188,14 +269,13 @@ def build_case_read_tools(
         """
         try:
             resp = await client.get_documents(case_id)
+            before = len(index.captures)
             index.note_documents(resp.documents)
             index.tool_calls += 1
-            trace.emit(
-                "tool",
-                name="get_documents",
-                inputs={},
+            _emit_tool(
+                "get_documents",
                 record_ids=[d.document_id for d in resp.documents],
-                captures=len(index.captures),
+                before=before,
             )
             return resp.model_dump(mode="json")
         except SimulatorError as exc:
@@ -213,14 +293,13 @@ def build_case_read_tools(
         """
         try:
             resp = await client.get_events(case_id)
+            before = len(index.captures)
             index.note_events(resp.events)
             index.tool_calls += 1
-            trace.emit(
-                "tool",
-                name="get_events",
-                inputs={},
+            _emit_tool(
+                "get_events",
                 record_ids=[e.event_id for e in resp.events],
-                captures=len(index.captures),
+                before=before,
             )
             return resp.model_dump(mode="json")
         except SimulatorError as exc:
@@ -279,9 +358,23 @@ def build_follow_up_read_tools(
                     "record_id": s.record_id,
                     "retrieval_ref": s.retrieval_ref,
                     "provenance": s.provenance.value,
+                    "attempt_id": attempt_id,
+                    # Authoritative field value returned to the model.
+                    "value": s.value,
                 }
             )
         return descriptors
+
+    def _emit_tool(name: str, *, record_ids: list[str], descriptors: list[dict[str, Any]]) -> None:
+        # facts = content actually returned to the model via source_fact_refs.
+        trace.emit(
+            "tool",
+            name=name,
+            inputs={},
+            record_ids=record_ids,
+            snapshot_ids=[d["snapshot_id"] for d in descriptors],
+            facts=tool_exposure_facts(descriptors),
+        )
 
     @tool
     async def get_case() -> dict[str, Any]:
@@ -292,13 +385,7 @@ def build_follow_up_read_tools(
             index.note_case(record)
             index.tool_calls += 1
             descriptors = _flush_new(before)
-            trace.emit(
-                "tool",
-                name="get_case",
-                inputs={},
-                record_ids=[case_id],
-                snapshot_ids=[d["snapshot_id"] for d in descriptors],
-            )
+            _emit_tool("get_case", record_ids=[case_id], descriptors=descriptors)
             return {**record.model_dump(mode="json"), "source_fact_refs": descriptors}
         except SimulatorError as exc:
             trace.emit("tool_error", name="get_case", error=str(exc))
@@ -323,12 +410,10 @@ def build_follow_up_read_tools(
                 }
                 for doc in resp.documents
             ]
-            trace.emit(
-                "tool",
-                name="get_documents",
-                inputs={},
+            _emit_tool(
+                "get_documents",
                 record_ids=[d.document_id for d in resp.documents],
-                snapshot_ids=[d["snapshot_id"] for d in descriptors],
+                descriptors=descriptors,
             )
             return {"case_id": case_id, "documents": docs_out}
         except SimulatorError as exc:
@@ -354,12 +439,10 @@ def build_follow_up_read_tools(
                 }
                 for ev in resp.events
             ]
-            trace.emit(
-                "tool",
-                name="get_events",
-                inputs={},
+            _emit_tool(
+                "get_events",
                 record_ids=[e.event_id for e in resp.events],
-                snapshot_ids=[d["snapshot_id"] for d in descriptors],
+                descriptors=descriptors,
             )
             return {"case_id": case_id, "events": events_out}
         except SimulatorError as exc:
@@ -391,7 +474,15 @@ def _persist_failed(
         error=error,
         completed_at=datetime.now(UTC),
     )
-    trace.emit("run_end", status="failed", error=error, cost_usd=cost_usd, usage=usage)
+    trace.emit(
+        "run_end",
+        status="failed",
+        error=error,
+        cost_usd=cost_usd,
+        usage=usage,
+        provider_model=provider_model,
+        exposure_instrumented=True,
+    )
     return InvestigationOutcome(
         result=result, usage=usage, cost_usd=cost_usd, provider_model=provider_model
     )
@@ -471,7 +562,12 @@ async def _run_investigation_body(
         model = model_factory(settings)
     except CostPause as exc:
         return _persist_failed(
-            store, run_id=run_id, case_id=case_id, objective=objective, error=str(exc), trace=trace
+            store,
+            run_id=run_id,
+            case_id=case_id,
+            objective=objective,
+            error=_classify_runtime_failure(exc),
+            trace=trace,
         )
     except Exception as exc:
         return _persist_failed(
@@ -489,22 +585,17 @@ async def _run_investigation_body(
         )
     except CostPause as exc:
         return _persist_failed(
-            store, run_id=run_id, case_id=case_id, objective=objective, error=str(exc), trace=trace
+            store,
+            run_id=run_id,
+            case_id=case_id,
+            objective=objective,
+            error=_classify_runtime_failure(exc),
+            trace=trace,
         )
 
     tools = build_case_read_tools(client, case_id, index, trace)
-    middleware: list[Any] = [
-        ModelCallLimitMiddleware(
-            run_limit=settings.max_model_turns,
-            exit_behavior="error",
-        ),
-        ToolCallLimitMiddleware(
-            run_limit=settings.max_tool_calls,
-            exit_behavior="error",
-        ),
-    ]
-    if is_live_model(model):
-        middleware.insert(0, make_live_guard_middleware(tracker))
+    allowed_tool_names = allowed_tool_name_set(tools, AgentFinding.__name__)
+    middleware = _limit_middleware(settings, tracker, model)
 
     agent = create_agent(
         model,
@@ -548,16 +639,21 @@ async def _run_investigation_body(
             provider_model=_usage_provider_model(usage),
         )
     except Exception as exc:
-        msg = str(exc)
-        if "limit" in msg.lower() or "budget" in msg.lower() or "recursion" in msg.lower():
-            err = f"execution budget exhausted: {exc}"
-        elif isinstance(exc, CostPause) or "input bound exceeded" in msg:
-            err = f"cost/input guard: {exc}"
-        else:
-            err = f"agent error: {exc}"
-        partial_msgs: list[BaseMessage] | None = None
-        if raw and isinstance(raw.get("messages"), list):
-            partial_msgs = raw["messages"]
+        err = _classify_runtime_failure(exc)
+        # raw is None when middleware aborts mid-turn; tracker may still hold AI turns.
+        partial_msgs = resolve_ai_messages(
+            raw.get("messages") if raw and isinstance(raw.get("messages"), list) else None,
+            tracker,
+        )
+        capture_model_turn_batches(trace, partial_msgs, case_id=case_id, run_id=run_id)
+        capture_tool_attempts_on_error(
+            trace,
+            partial_msgs,
+            case_id,
+            allowed_tool_names,
+            exc,
+            run_id=run_id,
+        )
         usage, cost = close_live_reservation(
             ledger,
             reservation,
@@ -588,6 +684,16 @@ async def _run_investigation_body(
         detail="ok",
     )
     provider_model = _usage_provider_model(usage)
+    ai_msgs = resolve_ai_messages(messages, tracker)
+    capture_model_turn_batches(trace, ai_msgs, case_id=case_id, run_id=run_id)
+    # Blocked unknown tool calls must be observable (pilot safety). Once only.
+    scan_unknown_tool_calls(
+        ai_msgs,
+        allowed_tool_names,
+        trace.emit,
+        case_id=case_id,
+        run_id=run_id,
+    )
 
     finding = raw.get("structured_response") if raw else None
     if not isinstance(finding, AgentFinding):
@@ -704,6 +810,7 @@ async def _run_investigation_body(
         usage=usage,
         provider_model=provider_model,
         capture_count=len(index.captures),
+        exposure_instrumented=True,
     )
     return InvestigationOutcome(
         result=result,
