@@ -12,17 +12,40 @@ _SECRET_KEYS = re.compile(
     r"(authorization|api[_-]?key|token|password|secret|bearer)",
     re.IGNORECASE,
 )
-_REASONING_KEYS = re.compile(r"reason", re.IGNORECASE)
+# Exact provider CoT field names only — not domain keys like reason/pause_reason.
+_REASONING_KEY_NAMES = frozenset(
+    {
+        "reasoning",
+        "reasoning_content",
+        "reasoning_details",
+        "reasoning_text",
+    }
+)
 _BEARER = re.compile(r"Bearer\s+\S+", re.IGNORECASE)
+
+
+def _is_secret_key(key: str) -> bool:
+    """True for credential-like keys; not model usage counters (*_tokens)."""
+    k = str(key)
+    kl = k.lower()
+    # input_tokens / output_tokens contain "token" but are billable usage, not secrets.
+    if kl.endswith("_tokens") or kl in {"tokens", "input_tokens", "output_tokens"}:
+        return False
+    return bool(_SECRET_KEYS.search(k))
+
+
+def _is_reasoning_key(key: str) -> bool:
+    """True for provider chain-of-thought keys (exact, case-insensitive)."""
+    return str(key).lower() in _REASONING_KEY_NAMES
 
 
 def _redact(value: Any) -> Any:
     if isinstance(value, dict):
         out: dict[str, Any] = {}
         for k, v in value.items():
-            if _SECRET_KEYS.search(str(k)):
+            if _is_secret_key(str(k)):
                 out[k] = "[REDACTED]"
-            elif _REASONING_KEYS.search(str(k)):
+            elif _is_reasoning_key(str(k)):
                 # Never persist private chain-of-thought / reasoning traces.
                 out[k] = "[REDACTED_REASONING]"
             else:
