@@ -66,7 +66,7 @@ Optional seed flags (via `uv run python scripts/seed.py`): `--db-path`, `--fixtu
 
 Optional: `CASEPILOT_COST_LEDGER_PATH` overrides the live cost ledger path (default `evals/reports/cost_ledger.json`).
 
-Do not commit `.env`, databases, traces, or generated eval reports (sanitized sample under `docs/` is intentional).
+Do not commit `.env`, databases, traces, Phoenix viewer data under `.data/phoenix/`, or generated eval reports (sanitized sample under `docs/` is intentional).
 
 ## Usage
 
@@ -103,6 +103,7 @@ Fixtures: 20 cases (`CASE-001` … `CASE-020`), 57 documents, 46 events in `fixt
 | `make sync`                                      | `uv sync --frozen --all-extras`                                                       |
 | `make provision-local-auth`                      | `uv run python scripts/provision_local_auth.py --write`                               |
 | `make dev`                                       | Two-process launcher + `/health` readiness (backend + simulator; UI is separate npm)  |
+| `make phoenix`                                   | Separate pinned Phoenix viewer on `127.0.0.1:6006` (not started by `make dev`)        |
 | `make seed`                                      | Non-destructive seed                                                                  |
 | `make reset-demo`                                | Destructive reseed (`--reset`)                                                        |
 | `make test`                                      | `uv run pytest` (deterministic; no paid model calls)                                  |
@@ -111,16 +112,48 @@ Fixtures: 20 cases (`CASE-001` … `CASE-020`), 57 documents, 46 events in `fixt
 | `make eval-offline RESULTS=path/to/results.json` | Offline grade only (no paid calls); optional `EVAL_ARGS=`                             |
 | `make eval MAX_CASES=N`                          | Live paid opt-in; `BUDGET_USD` defaults to `5` and must be ≤ 5; optional `EVAL_ARGS=` |
 
-## Backend OTLP export
+## Local trace viewer (Phoenix)
 
-Optional sanitized OTLP HTTP export from investigation/follow-up runs. Not required for `make dev`, tests, offline eval, or grading.
+Optional separate process for inspecting model/tool timelines. Not required for `make dev`, tests, offline eval, or grading. Phoenix is source-available (Elastic License 2.0), not a backend lockfile dependency.
+
+### Start
+
+```bash
+make phoenix
+# equivalent: uv run python scripts/phoenix.py
+```
+
+Opens the viewer at **http://127.0.0.1:6006**. The launcher (`scripts/phoenix.py`):
+
+- runs pinned **`arize-phoenix==20.26.1`** via `uvx --python 3.14` (isolated tool env; app lockfile unchanged)
+- binds HTTP/UI with **`PHOENIX_HOST=127.0.0.1`** (Phoenix’s HTTP default is `0.0.0.0`)
+- sets absolute **`PHOENIX_WORKING_DIR=<repo>/.data/phoenix`** and **`PHOENIX_SQL_DATABASE_URL=sqlite:///<repo>/.data/phoenix/phoenix.db`**
+- sets **`PHOENIX_TELEMETRY_ENABLED=false`** (official switch; boot banner reports Telemetry disabled)
+- does **not** start backend/simulator and is **not** auto-started by imports, API requests, or tests
+
+**Bind honesty:** HTTP UI and OTLP HTTP are loopback-only. Phoenix still opens an **unused OTLP gRPC listener on all interfaces** (default port **4317**, or `PHOENIX_GRPC_PORT`). This is local self-hosted viewing, not a guarantee that every listener is loopback. On an untrusted network without a host firewall, that port could accept inbound trace traffic and consume disk under `.data/phoenix/`. It is not cloud export. CasePilot only sends OTLP over loopback HTTP (`TRACING_OTLP_ENDPOINT`). No firewall/container wrapper ships here.
+
+Stop with Ctrl-C.
+
+### Backend export settings
 
 | Setting / env | Behavior |
 | --- | --- |
 | `TRACING_ENABLED` (`Settings.tracing_enabled`) | Default **on** when unset; set falsey to disable OTLP export |
-| `TRACING_OTLP_ENDPOINT` | Default `http://127.0.0.1:6006/v1/traces` (loopback OTLP HTTP only; non-loopback disables export) |
+| `TRACING_OTLP_ENDPOINT` | Default `http://127.0.0.1:6006/v1/traces` (loopback OTLP HTTP) |
 
-A collector on the endpoint is optional and separate from the backend. Collector absent or tracing disabled must not fail investigations, follow-ups, or evals. Ordinary tests must not require a collector. Existing JSONL traces under `TRACE_DIR` (default `traces/`) remain the application audit surface. Architecture: [observability](architecture.md#local-observability-sanitized-otlp).
+Phoenix being stopped must not fail investigations, follow-ups, or evals. Ordinary tests must not require the viewer. Existing JSONL traces under `TRACE_DIR` (default `traces/`) remain the application audit surface.
+
+### Storage locations
+
+| Data | Location | Cleanup |
+| --- | --- | --- |
+| Phoenix viewer data | `<repo>/.data/phoenix/` (gitignored via `.data/`) | **Manual only.** Stop Phoenix and disable/stop exporters, then `rm -rf .data/phoenix`, then `make phoenix` to recreate empty storage. Do **not** delete all of `.data/` (that would remove app DBs). |
+| JSONL traces | `TRACE_DIR` default **`traces/`** (repo-relative; gitignored) | Separate files. Delete individual `traces/<run_id>.jsonl` (or the directory) manually if desired. Unaffected by Phoenix reset. |
+
+Phoenix reset does **not** remove cases, proposals, evidence, eval reports, or the cost ledger. Deleting rows in the UI may not reclaim SQLite disk space immediately; removing `.data/phoenix/` is the full reclaim path.
+
+No retention daemon, quota, or scheduled cleanup ships with this project.
 
 ## Quality
 
@@ -142,5 +175,5 @@ These offline gates never touch OpenRouter. Live `make eval` / UI Investigate ar
 - For UI connection errors, wait for `make dev` health checks and verify `BACKEND_BASE_URL`.
 - After changing tokens or configuration, restart the services and Vite. Never paste secrets into frontend code.
 - For paused live calls, inspect ledger headroom and pricing status. See [cost controls](architecture.md#cost-controls); do not bypass the guard.
-- If the OTLP collector is down, investigations still succeed; set `TRACING_ENABLED=false` to silence export attempts.
-- If the default OTLP port is busy, point `TRACING_OTLP_ENDPOINT` at another loopback collector URL.
+- Phoenix needs **`uv`/`uvx` on PATH**. First launch downloads the pinned server wheels into an isolated tool env.
+- If port 6006 is busy, stop the other process or set `PHOENIX_PORT` before `make phoenix` (and align `TRACING_OTLP_ENDPOINT`).

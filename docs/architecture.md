@@ -101,9 +101,9 @@ The application envelope is **$5 total**, with live calls restricted to `z-ai/gl
 
 This is conservative **application policy**, not an account-level provider hard cap or a per-case price promise. Use provider account limits for an external hard stop. Current spend belongs in the operational ledger, not a duplicated architecture snapshot.
 
-## Local observability (sanitized OTLP)
+## Local observability (Phoenix)
 
-Optional **local OTLP export** sits beside existing JSONL traces and the cost ledger. It does not add agent tools, change grading, or mutate spend accounting. A compatible loopback collector/viewer is optional and separate from the backend process.
+Phoenix is an optional **local inspection surface** beside existing JSONL traces and the cost ledger. It does not add agent tools, change grading, or mutate spend accounting.
 
 ```mermaid
 flowchart LR
@@ -114,7 +114,9 @@ flowchart LR
   A --> J[Existing JSONL traces]
   A --> C[Existing cost guard and ledger]
   A --> S[Sanitized tracing integration]
-  S -->|OTLP HTTP on loopback| O[Optional local OTLP collector]
+  S -->|OTLP HTTP on loopback| P[Local Phoenix process]
+  P --> D[".data/phoenix SQLite storage"]
+  U[Browser on localhost] --> P
 ```
 
 ### Component responsibilities
@@ -124,15 +126,17 @@ flowchart LR
 | Backend agent / follow-up paths | Produce application run IDs (and attempt IDs for follow-ups); emit sanitized spans only when tracing is enabled |
 | Existing `TraceWriter` JSONL (`TRACE_DIR`, default `traces/`) | Authoritative application audit trail for tools, outcomes, evidence snapshots |
 | Cost guard + ledger | Authoritative usage/cost; exporters must not charge or reserve |
-| Sanitized OTLP exporter (`casepilot.backend.tracing`) | Explicit LangChain callback spans only; loopback OTLP HTTP; redacts before export |
+| Local Phoenix process (`make phoenix` / `scripts/phoenix.py`) | Pinned `arize-phoenix==20.26.1` viewer + OTLP HTTP on `127.0.0.1:6006`; SQLite under `<repo>/.data/phoenix/` |
 | Evaluator | Grades saved or live results; correlates to traces by **existing application run ID** only |
 
 ### Local-only export and privacy
 
-- Backend export uses `TRACING_ENABLED` / `TRACING_OTLP_ENDPOINT` (default `http://127.0.0.1:6006/v1/traces`). Non-loopback endpoints are rejected; export disables rather than sending remotely.
-- No Docker requirement, no cloud account, no implicit remote exporters from the app.
+- HTTP UI and OTLP HTTP bind **loopback** via `PHOENIX_HOST=127.0.0.1` (launcher overrides Phoenix’s HTTP default `0.0.0.0`).
+- **Accepted exception:** Phoenix 20.26.1 still starts an unused OTLP **gRPC** intake on **all interfaces** (`[::]:4317` by default, or `PHOENIX_GRPC_PORT`). `--read-only` disables that gRPC port but also returns 403 on `POST /v1/traces`, so it is not used. Local self-hosted viewing is therefore **not** “every listener is loopback.” Risk is inbound trace injection / viewer disk growth if the host is reachable and unfirewalled—not cloud export. CasePilot exporters use loopback OTLP HTTP only.
+- Backend export uses `TRACING_ENABLED` / `TRACING_OTLP_ENDPOINT` (default `http://127.0.0.1:6006/v1/traces`). No Docker requirement, no cloud account, no implicit remote exporters from the app.
+- Launcher sets `PHOENIX_TELEMETRY_ENABLED=false` so Phoenix product telemetry stays off (verified in server boot banner).
 - Content that leaves the backend must pass application-controlled sanitization first (secrets, bearer credentials, provider reasoning fields). Built-in hide flags alone are not the boundary.
-- Collector absent or tracing disabled must not fail or materially delay investigation, follow-up, or eval. JSONL tracing remains available.
+- Phoenix absent or disabled must not fail or materially delay investigation, follow-up, or eval. JSONL tracing remains available.
 
 ### Correlation (no new identity plane)
 
@@ -151,7 +155,7 @@ flowchart TD
 - Report-only / offline grading of saved results performs **no** agent execution and creates **no** execution trace.
 - Token usage and cost appear in traces only when the existing normalized usage path supplies them; missing stays missing.
 
-Export settings: [quickstart](quickstart.md#backend-otlp-export). Eval lookup workflow: [evaluation](evaluation.md#trace-lookup-for-eval-results).
+Operational start/stop, storage paths, disable switch, and manual Phoenix reset: [quickstart](quickstart.md#local-trace-viewer-phoenix). Eval lookup workflow: [evaluation](evaluation.md#trace-lookup-for-eval-results).
 
 ## Local trust and test boundaries
 
@@ -171,4 +175,4 @@ Run the [offline quality gates](quickstart.md#quality) without OpenRouter. Live 
 - **Human control:** approval adds review friction but keeps recommendations separate from execution. Payload integrity protects the reviewed task, not the correctness of the recommendation.
 - **Deliberately bounded agent:** LangChain tools and structured output, not a custom graph or multi-agent system. No generic tool access, streaming tool feed, bulk actions, or automatic retries.
 - **Deferred work:** production hosting/packaging, Docker, hosted CI, enterprise identity/RBAC, and real insurer integrations. Future work should establish stronger evaluation and semantic checks before expanding autonomy.
-- **Observability scope:** Local sanitized OTLP export only—no CI dashboards, cloud export, prompt management, retention automation, or replacement of JSONL/cost authority.
+- **Observability scope:** Phoenix is a local viewer only—no CI dashboards, cloud export, prompt management, retention automation, or replacement of JSONL/cost authority.

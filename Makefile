@@ -1,4 +1,4 @@
-.PHONY: sync dev seed reset-demo provision-local-auth test lint typecheck eval eval-offline
+.PHONY: sync dev phoenix seed reset-demo provision-local-auth test lint typecheck eval eval-offline
 
 UV ?= uv
 UV_RUN := $(UV) run
@@ -17,6 +17,11 @@ provision-local-auth:
 
 dev:
 	$(UV_RUN) python scripts/dev.py
+
+# Separate local Phoenix viewer (pinned uvx process; not a backend dep).
+# Does not start backend/simulator. Stop with Ctrl-C.
+phoenix:
+	$(UV_RUN) python scripts/phoenix.py
 
 # Non-destructive: refuses overwrite of non-empty simulator DB
 seed:

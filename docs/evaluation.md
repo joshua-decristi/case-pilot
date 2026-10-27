@@ -44,10 +44,11 @@ Grading is rule-based against `evals/ground_truth/labels.json` (not an LLM judge
 
 ### Trace lookup for eval results
 
-Tracing and grading are **separate**. When a live or scripted eval case invokes the backend agent, the same execution can emit a sanitized OTLP trace correlated by the **application run ID already stored on the eval result**. OTLP export does not score cases, alter labels, or touch the cost ledger.
+Tracing and grading are **separate**. When a live or scripted eval case invokes the backend agent, the same execution can emit a Phoenix trace correlated by the **application run ID already stored on the eval result**. Phoenix does not score cases, alter labels, or touch the cost ledger.
 
 ```bash
-# 1. Optional: start any loopback OTLP HTTP collector on the configured endpoint.
+# 1. Optional: local viewer (separate process)
+make phoenix   # http://127.0.0.1:6006
 
 # 2. Run eval that actually executes the agent (live paid path shown).
 #    Export uses TRACING_ENABLED + TRACING_OTLP_ENDPOINT
@@ -57,17 +58,16 @@ make eval MAX_CASES=1
 # 3. Open the result JSON under evals/reports/ (or your --report-dir).
 #    Copy the existing application run_id from the case result.
 
-# 4. In the collector/viewer, search/filter by that run ID
-#    (same ID as JSONL traces/<run_id>.jsonl).
+# 4. In Phoenix, search/filter by that run ID (same ID as JSONL traces/<run_id>.jsonl).
 ```
 
-| Path | Agent execution? | OTLP execution trace? | Grades? |
+| Path | Agent execution? | Phoenix execution trace? | Grades? |
 | --- | --- | --- | --- |
-| `make eval` / `--live` | Yes (paid) | Yes, if `TRACING_ENABLED` and a loopback collector is up | Yes |
+| `make eval` / `--live` | Yes (paid) | Yes, if `TRACING_ENABLED` and exporter/viewer path is up | Yes |
 | Scenario pilot live slots | Yes (paid) | Same as other agent runs | Pilot/judge path (not held-out labels) |
 | `make eval-offline` / `--offline` / `run_offline_report` | **No** | **No** — report-only grading never reruns the agent for telemetry | Yes, from saved results |
 
-Do **not** transmit eval labels or expected answers to the backend for tracing. Do **not** rerun an agent solely to populate a viewer. Scores and cost behavior must match with tracing enabled or disabled; the grader and cost guard remain authoritative. Export settings: [quickstart](quickstart.md#backend-otlp-export). Architecture: [observability](architecture.md#local-observability-sanitized-otlp).
+Do **not** transmit eval labels or expected answers to the backend for tracing. Do **not** rerun an agent solely to populate the viewer. Scores and cost behavior must match with tracing enabled or disabled; the grader and cost guard remain authoritative. Viewer ops and `TRACING_ENABLED`: [quickstart](quickstart.md#local-trace-viewer-phoenix). Architecture: [observability](architecture.md#local-observability-phoenix).
 
 **Scenario pilot** (paid; separate mode):
 
@@ -88,6 +88,7 @@ Six development scenarios × 3 reps + calibration gate. Requires explicit `--pil
 | `SIMULATOR_DB_PATH`              | Simulator                          | Seeded records + executed tasks                                               |
 | `BACKEND_DB_PATH`                | Backend                            | Runs, proposals, approval/audit state, conversation turns, evidence snapshots |
 | `TRACE_DIR`                      | Backend                            | JSONL traces (no secrets/tokens); default `traces/`                           |
+| `.data/phoenix/`                 | Phoenix viewer process             | Local SQLite/viewer data only; manual reset; not used by graders              |
 
 **Limitations:**
 
