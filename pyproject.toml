@@ -10,6 +10,8 @@ dependencies = [
     "httpx",
     "langchain",
     "langchain-openrouter",
+    "opentelemetry-sdk>=1.45.1",
+    "opentelemetry-exporter-otlp-proto-http>=1.45.1",
 ]
 
 [project.optional-dependencies]
@@ -56,5 +58,6 @@ mypy_path = "src"
 module = [
     "langchain.*",
     "langchain_openrouter.*",
+    "opentelemetry.*",
 ]
 ignore_missing_imports = true

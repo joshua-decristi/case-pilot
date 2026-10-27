@@ -16,6 +16,7 @@ from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel
 
 from casepilot.backend.agent import (
@@ -53,6 +54,7 @@ from casepilot.backend.pilot_observability import (
     scan_unknown_tool_calls,
 )
 from casepilot.backend.trace import TraceWriter
+from casepilot.backend.tracing import InvestigationTrace, investigation_trace
 from casepilot.evaluation.cost import ALLOWED_LIVE_MODEL, CostPause
 from casepilot.shared.config import Settings
 from casepilot.shared.contracts import (
@@ -400,6 +402,36 @@ async def run_follow_up(
         trace.emit("follow_up_skip", reason="attempt not pending", status=attempt.status.value)
         return
 
+    with investigation_trace(run_id, run.case_id, attempt_id=attempt_id) as otel:
+        await _run_follow_up_body(
+            run_id=run_id,
+            turn_id=turn_id,
+            attempt_id=attempt_id,
+            store=store,
+            client=client,
+            settings=settings,
+            model_factory=model_factory,
+            run=run,
+            turn=turn,
+            trace=trace,
+            otel=otel,
+        )
+
+
+async def _run_follow_up_body(
+    *,
+    run_id: str,
+    turn_id: str,
+    attempt_id: str,
+    store: BackendStore,
+    client: SimulatorClient,
+    settings: Settings,
+    model_factory: ModelFactory | None,
+    run: RunRecord,
+    turn: ConversationTurn,
+    trace: TraceWriter,
+    otel: InvestigationTrace,
+) -> None:
     question = turn.question
     catalog: dict[str, EvidenceSnapshot] = {
         s.snapshot_id: s for s in store.list_evidence_snapshots(run_id)
@@ -435,6 +467,8 @@ async def run_follow_up(
             provider_model=_usage_provider_model(usage),
             exposure_instrumented=True,
         )
+        otel.set_usage(usage, cost_usd=cost)
+        otel.set_outcome("failed", error=error)
 
     def _succeed(
         answer: FollowUpAnswer,
@@ -451,6 +485,8 @@ async def run_follow_up(
             source_fact_count=len(answer.source_facts),
             exposure_instrumented=True,
         )
+        otel.set_usage(usage, cost_usd=cost)
+        otel.set_outcome("succeeded")
 
     factory = model_factory or default_model_factory
     try:
@@ -463,6 +499,7 @@ async def run_follow_up(
         return
 
     model_name = ALLOWED_LIVE_MODEL if is_live_model(model) else "scripted"
+    otel.set_mode("live" if is_live_model(model) else "scripted")
     try:
         ledger, reservation = _reserve_attempt(
             model=model,
@@ -527,9 +564,13 @@ async def run_follow_up(
     )
 
     raw: dict[str, Any] | None = None
+    invoke_config: RunnableConfig = {"callbacks": otel.callbacks}
     try:
         raw = await asyncio.wait_for(
-            agent.ainvoke({"messages": [HumanMessage(content=user_text)]}),
+            agent.ainvoke(
+                {"messages": [HumanMessage(content=user_text)]},
+                config=invoke_config,
+            ),
             timeout=settings.investigation_timeout_seconds,
         )
     except asyncio.CancelledError:

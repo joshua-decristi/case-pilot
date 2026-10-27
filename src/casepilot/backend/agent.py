@@ -22,6 +22,7 @@ from langchain.agents.middleware.tool_call_limit import ToolCallLimitExceededErr
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langgraph.errors import GraphRecursionError
 from pydantic import BaseModel, Field
@@ -55,6 +56,7 @@ from casepilot.backend.pilot_observability import (
     tool_exposure_facts,
 )
 from casepilot.backend.trace import TraceWriter
+from casepilot.backend.tracing import InvestigationTrace, investigation_trace
 from casepilot.evaluation.cost import ALLOWED_LIVE_MODEL, CostPause
 from casepilot.shared.config import Settings
 from casepilot.shared.contracts import (
@@ -497,6 +499,18 @@ def _usage_provider_model(usage: dict[str, Any] | None) -> str | None:
     return None
 
 
+def _apply_investigation_trace(otel: InvestigationTrace, outcome: InvestigationOutcome) -> None:
+    """Attach authoritative usage/cost and final status to the root span."""
+    otel.set_usage(outcome.usage, cost_usd=outcome.cost_usd)
+    status = outcome.result.status
+    error = (
+        (outcome.result.explanation or outcome.result.uncertainty)
+        if status == RunStatus.FAILED
+        else None
+    )
+    otel.set_outcome(status.value, error=error)
+
+
 async def run_investigation(
     *,
     settings: Settings,
@@ -522,24 +536,31 @@ async def run_investigation(
     )
     tracker = LiveCallTracker()
 
-    try:
-        return await _run_investigation_body(
-            settings=settings,
-            store=store,
-            client=client,
-            case_id=case_id,
-            objective=objective,
-            model_factory=factory,
-            run_id=run_id,
-            trace=trace,
-            index=index,
-            tracker=tracker,
-        )
-    finally:
-        # Run row is inserted on all body exit paths; FK requires it first.
-        snaps = persist_index_snapshots(store, index)
-        if snaps:
-            trace.emit("evidence_snapshots", count=len(snaps), run_id=run_id)
+    with investigation_trace(run_id, case_id) as otel:
+        try:
+            outcome = await _run_investigation_body(
+                settings=settings,
+                store=store,
+                client=client,
+                case_id=case_id,
+                objective=objective,
+                model_factory=factory,
+                run_id=run_id,
+                trace=trace,
+                index=index,
+                tracker=tracker,
+                otel=otel,
+            )
+            _apply_investigation_trace(otel, outcome)
+            return outcome
+        except Exception as exc:
+            otel.set_outcome("failed", error=str(exc))
+            raise
+        finally:
+            # Run row is inserted on all body exit paths; FK requires it first.
+            snaps = persist_index_snapshots(store, index)
+            if snaps:
+                trace.emit("evidence_snapshots", count=len(snaps), run_id=run_id)
 
 
 async def _run_investigation_body(
@@ -554,6 +575,7 @@ async def _run_investigation_body(
     trace: TraceWriter,
     index: RetrievedIndex,
     tracker: LiveCallTracker,
+    otel: InvestigationTrace,
 ) -> InvestigationOutcome:
     ledger = None
     reservation = None
@@ -575,6 +597,7 @@ async def _run_investigation_body(
         )
 
     model_name = ALLOWED_LIVE_MODEL if is_live_model(model) else "scripted"
+    otel.set_mode("live" if is_live_model(model) else "scripted")
     try:
         ledger, reservation = guard_live_call(
             model=model,
@@ -612,9 +635,13 @@ async def _run_investigation_body(
     )
 
     raw: dict[str, Any] | None = None
+    invoke_config: RunnableConfig = {"callbacks": otel.callbacks}
     try:
         raw = await asyncio.wait_for(
-            agent.ainvoke({"messages": [HumanMessage(content=user_msg)]}),
+            agent.ainvoke(
+                {"messages": [HumanMessage(content=user_msg)]},
+                config=invoke_config,
+            ),
             timeout=settings.investigation_timeout_seconds,
         )
     except TimeoutError:

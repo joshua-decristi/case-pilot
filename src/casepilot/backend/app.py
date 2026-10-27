@@ -34,6 +34,7 @@ from casepilot.backend.hooks import (
 )
 from casepilot.backend.pilot_observability import emit_forbidden_attempt
 from casepilot.backend.trace import TraceWriter
+from casepilot.backend.tracing import configure_tracing, shutdown_tracing
 from casepilot.shared.config import Settings, get_settings
 from casepilot.shared.contracts import (
     ApproveProposalRequest,
@@ -164,9 +165,11 @@ def create_app(
             )
         backend_state.store.recover_interrupted_attempts()
         app.state.backend = backend_state
+        configure_tracing(backend_state.settings)
         try:
             yield
         finally:
+            shutdown_tracing()
             if owns_client:
                 await backend_state.client.aclose()
             if owns_store:

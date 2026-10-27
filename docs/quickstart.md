@@ -61,6 +61,8 @@ Optional seed flags (via `uv run python scripts/seed.py`): `--db-path`, `--fixtu
 | `SIMULATOR_DB_PATH`                       | Default `.data/simulator.sqlite3`                                          |
 | `BACKEND_DB_PATH`                         | Runs, proposals, approval state — default `.data/backend.sqlite3`          |
 | `TRACE_DIR`                               | JSONL traces — default `traces`                                            |
+| `TRACING_ENABLED`                         | Backend export switch (`Settings.tracing_enabled`); default on when unset  |
+| `TRACING_OTLP_ENDPOINT`                   | OTLP HTTP endpoint — default `http://127.0.0.1:6006/v1/traces`             |
 
 Optional: `CASEPILOT_COST_LEDGER_PATH` overrides the live cost ledger path (default `evals/reports/cost_ledger.json`).
 
@@ -109,6 +111,17 @@ Fixtures: 20 cases (`CASE-001` … `CASE-020`), 57 documents, 46 events in `fixt
 | `make eval-offline RESULTS=path/to/results.json` | Offline grade only (no paid calls); optional `EVAL_ARGS=`                             |
 | `make eval MAX_CASES=N`                          | Live paid opt-in; `BUDGET_USD` defaults to `5` and must be ≤ 5; optional `EVAL_ARGS=` |
 
+## Backend OTLP export
+
+Optional sanitized OTLP HTTP export from investigation/follow-up runs. Not required for `make dev`, tests, offline eval, or grading.
+
+| Setting / env | Behavior |
+| --- | --- |
+| `TRACING_ENABLED` (`Settings.tracing_enabled`) | Default **on** when unset; set falsey to disable OTLP export |
+| `TRACING_OTLP_ENDPOINT` | Default `http://127.0.0.1:6006/v1/traces` (loopback OTLP HTTP only; non-loopback disables export) |
+
+A collector on the endpoint is optional and separate from the backend. Collector absent or tracing disabled must not fail investigations, follow-ups, or evals. Ordinary tests must not require a collector. Existing JSONL traces under `TRACE_DIR` (default `traces/`) remain the application audit surface. Architecture: [observability](architecture.md#local-observability-sanitized-otlp).
+
 ## Quality
 
 No hosted CI in this repo; quality gates run locally with `uv` + Python **3.14**:
@@ -129,3 +142,5 @@ These offline gates never touch OpenRouter. Live `make eval` / UI Investigate ar
 - For UI connection errors, wait for `make dev` health checks and verify `BACKEND_BASE_URL`.
 - After changing tokens or configuration, restart the services and Vite. Never paste secrets into frontend code.
 - For paused live calls, inspect ledger headroom and pricing status. See [cost controls](architecture.md#cost-controls); do not bypass the guard.
+- If the OTLP collector is down, investigations still succeed; set `TRACING_ENABLED=false` to silence export attempts.
+- If the default OTLP port is busy, point `TRACING_OTLP_ENDPOINT` at another loopback collector URL.

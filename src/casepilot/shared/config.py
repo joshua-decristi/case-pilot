@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     simulator_db_path: Path = Path(".data/simulator.sqlite3")
     trace_dir: Path = Path("traces")
 
+    # Local OTLP tracing (Phoenix viewer is a separate process; loopback only)
+    tracing_enabled: bool = True
+    tracing_otlp_endpoint: str = "http://127.0.0.1:6006/v1/traces"
+
     # Execution budgets (draft defaults from spec)
     investigation_timeout_seconds: float = 60.0
     tool_http_timeout_seconds: float = 10.0

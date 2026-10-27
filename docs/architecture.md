@@ -101,6 +101,58 @@ The application envelope is **$5 total**, with live calls restricted to `z-ai/gl
 
 This is conservative **application policy**, not an account-level provider hard cap or a per-case price promise. Use provider account limits for an external hard stop. Current spend belongs in the operational ledger, not a duplicated architecture snapshot.
 
+## Local observability (sanitized OTLP)
+
+Optional **local OTLP export** sits beside existing JSONL traces and the cost ledger. It does not add agent tools, change grading, or mutate spend accounting. A compatible loopback collector/viewer is optional and separate from the backend process.
+
+```mermaid
+flowchart LR
+  I[Investigation or follow-up] --> A[LangChain agent]
+  E[Eval case] --> A
+  A --> M[Model calls]
+  A --> T[Case-bound tools]
+  A --> J[Existing JSONL traces]
+  A --> C[Existing cost guard and ledger]
+  A --> S[Sanitized tracing integration]
+  S -->|OTLP HTTP on loopback| O[Optional local OTLP collector]
+```
+
+### Component responsibilities
+
+| Piece | Role |
+| --- | --- |
+| Backend agent / follow-up paths | Produce application run IDs (and attempt IDs for follow-ups); emit sanitized spans only when tracing is enabled |
+| Existing `TraceWriter` JSONL (`TRACE_DIR`, default `traces/`) | Authoritative application audit trail for tools, outcomes, evidence snapshots |
+| Cost guard + ledger | Authoritative usage/cost; exporters must not charge or reserve |
+| Sanitized OTLP exporter (`casepilot.backend.tracing`) | Explicit LangChain callback spans only; loopback OTLP HTTP; redacts before export |
+| Evaluator | Grades saved or live results; correlates to traces by **existing application run ID** only |
+
+### Local-only export and privacy
+
+- Backend export uses `TRACING_ENABLED` / `TRACING_OTLP_ENDPOINT` (default `http://127.0.0.1:6006/v1/traces`). Non-loopback endpoints are rejected; export disables rather than sending remotely.
+- No Docker requirement, no cloud account, no implicit remote exporters from the app.
+- Content that leaves the backend must pass application-controlled sanitization first (secrets, bearer credentials, provider reasoning fields). Built-in hide flags alone are not the boundary.
+- Collector absent or tracing disabled must not fail or materially delay investigation, follow-up, or eval. JSONL tracing remains available.
+
+### Correlation (no new identity plane)
+
+```mermaid
+flowchart TD
+  R["Investigation root: application run ID"] --> L[Model turn: sanitized messages and usage]
+  R --> T[Tool call: name, sanitized arguments and result]
+  R --> O[Final status or error]
+  F["Follow-up root: run ID and attempt ID"] --> FL[Model and tool spans]
+  E["Eval result: existing application run ID"] -. lookup .-> R
+```
+
+- Investigations and eval-triggered agent runs share the existing application **run ID**.
+- Follow-ups also carry **attempt ID**.
+- Eval lookup uses run IDs already present in results. Do not push labels, expected answers, or extra eval metadata into the backend for tracing.
+- Report-only / offline grading of saved results performs **no** agent execution and creates **no** execution trace.
+- Token usage and cost appear in traces only when the existing normalized usage path supplies them; missing stays missing.
+
+Export settings: [quickstart](quickstart.md#backend-otlp-export). Eval lookup workflow: [evaluation](evaluation.md#trace-lookup-for-eval-results).
+
 ## Local trust and test boundaries
 
 - Services bind loopback. Backend-to-simulator requests use `SIMULATOR_SERVICE_TOKEN`; approve/reject use `OPERATOR_TOKEN`.
@@ -119,3 +171,4 @@ Run the [offline quality gates](quickstart.md#quality) without OpenRouter. Live 
 - **Human control:** approval adds review friction but keeps recommendations separate from execution. Payload integrity protects the reviewed task, not the correctness of the recommendation.
 - **Deliberately bounded agent:** LangChain tools and structured output, not a custom graph or multi-agent system. No generic tool access, streaming tool feed, bulk actions, or automatic retries.
 - **Deferred work:** production hosting/packaging, Docker, hosted CI, enterprise identity/RBAC, and real insurer integrations. Future work should establish stronger evaluation and semantic checks before expanding autonomy.
+- **Observability scope:** Local sanitized OTLP export only—no CI dashboards, cloud export, prompt management, retention automation, or replacement of JSONL/cost authority.
