@@ -13,3 +13,13 @@ No cross-slice equivalence claims.
 **Retained:** investigate → approve/reject → execute at real backend+simulator+SQLite boundary; reject terminal; outage retry; invalid evidence does not write proposal; idempotent approve side effects; unit coverage for spend/redaction/evidence/fail-closed.
 
 **Accepted loss:** Mock route/schema helper units and exact mock-flow assertion shapes not preserved; denial-trace schema not owned here.
+
+## 2. Eval coverage / orchestration gate contract
+
+**Files:** `tests/unit/test_eval_coverage_contract.py`, `test_pilot_coverage.py`, `test_scenario_pilot.py`
+
+**Change:** Nine original gate nodes folded into fixture-driven `test_eval_coverage_contract.py`. `test_pilot_coverage` keeps classify/assess honesty; `test_scenario_pilot` keeps focused orchestration (large low-value plumbing deleted). Header on contract module marked historically applied.
+
+**Retained:** Required-retrieval coverage gate; cohort reevaluate/report gate integrity; assessment status honesty paths still in pilot_coverage.
+
+**Accepted loss:** Exhaustive scenario-pilot orchestration micro-branches and repetitive gate plumbing; no claim of equivalent node-for-node coverage vs pre-redesign scenario_pilot.
