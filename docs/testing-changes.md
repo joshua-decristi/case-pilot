@@ -33,3 +33,13 @@ No cross-slice equivalence claims.
 **Retained:** Deterministic scoring truth; cost/budget gates touched by harness; report pipeline honesty needed to avoid false quality claims.
 
 **Accepted loss:** Low-impact harness helper/edge assertion volume; not every historical input vector.
+
+## 4. Evaluation judge
+
+**Files:** `tests/unit/test_evaluation_judge.py`
+
+**Change:** Collapse judge suite to focused fail-closed contract tests (scripted; no paid calls).
+
+**Retained:** Judge fail-closed on invalid/malformed outcomes; dimension assessment contracts that gate false quality claims.
+
+**Accepted loss:** Broad judge helper/branch matrix and repetitive serialization/plumbing asserts.
