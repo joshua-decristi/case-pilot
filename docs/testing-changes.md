@@ -103,3 +103,13 @@ No cross-slice equivalence claims.
 **Retained:** Investigation and follow-up execution limit enforcement (budget/input/tool) that gates unintended spend.
 
 **Accepted loss:** Minor redundant limit-edge volume only.
+
+## 9. Simulator integration
+
+**Files:** `tests/integration/test_simulator.py`
+
+**Change:** Trim simulator integration to representative concurrency/conflict/seed/outage contracts.
+
+**Retained:** Simulator behaviors required for real investigation/execution integration confidence (conflict, seed, outage-route).
+
+**Accepted loss:** Exhaustive simulator route micro-matrix beyond representative contracts.
