@@ -123,3 +123,13 @@ No cross-slice equivalence claims.
 **Retained:** Secrets must not leak via contract/serialization surfaces.
 
 **Accepted loss:** Schema/enum/serialization/route-template-only coverage deleted without replacement.
+
+## 10b. CLI surface
+
+**Files:** `tests/unit/test_cli.py`
+
+**Change:** Trim CLI units to bearer-token-not-printed and client timeout safety.
+
+**Retained:** CLI must not print bearer tokens; client timeout behavior that avoids hung paid/live calls.
+
+**Accepted loss:** Broader CLI help/plumbing/argparse coverage.
