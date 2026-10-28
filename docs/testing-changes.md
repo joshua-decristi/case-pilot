@@ -133,3 +133,15 @@ No cross-slice equivalence claims.
 **Retained:** CLI must not print bearer tokens; client timeout behavior that avoids hung paid/live calls.
 
 **Accepted loss:** Broader CLI help/plumbing/argparse coverage.
+
+## 11. Pilot assets + final audit docs
+
+**Files:** `tests/unit/test_pilot_assets.py`; `docs/testing-audit.md`, `docs/testing-audit-spec.md`, `docs/testing-risk-redesign.md`
+
+**Change:** Trim asset-loader tests to representative composition/load safety. Publish final global audit inventory (183), superseded first-pass spec, and governing risk redesign. `test_fixtures.py` / metadata unchanged (no commit). Final totals accurate only in this commit.
+
+**Retained:** Representative pilot asset load/composition needed so eval datasets remain usable; full retained-guarantee map in audit docs.
+
+**Accepted loss:** Exhaustive asset-loader mutation matrices; individual composition micro-assertions beyond retained fixture composition (e.g. GT split in fixtures).
+
+**Global docs:** [testing-audit.md](testing-audit.md) (living inventory), [testing-risk-redesign.md](testing-risk-redesign.md) (governing redesign), [testing-audit-spec.md](testing-audit-spec.md) (historical first pass, superseded).
