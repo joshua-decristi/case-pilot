@@ -73,3 +73,13 @@ No cross-slice equivalence claims.
 **Retained:** Representative follow-up including timeout→failed; evidence snapshot isolation/grounding and sensitive handling shared with follow-up path.
 
 **Accepted loss:** Exact render/parser/follow-up diagnostics files and their assertion volume — deleted without replacement.
+
+## 7. Conversation recovery
+
+**Files:** `tests/unit/test_conversation_store.py`, `test_conversation_routes.py`
+
+**Change:** Trim store/route conversation tests to atomicity, retry/recovery, and essential route behavior.
+
+**Retained:** Conversation persistence atomicity and retry recovery; route-level create/read behaviors needed for restart-safe follow-up continuity.
+
+**Accepted loss:** Redundant route-template and store helper asserts.

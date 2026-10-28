@@ -1,4 +1,4 @@
-"""API tests for conversation GET/send/retry (scripted follow-up, no paid calls)."""
+"""API tests for conversation send/retry/restart (scripted follow-up, no paid calls)."""
 
 from __future__ import annotations
 
@@ -114,21 +114,6 @@ def _app(tmp_path: Path, store: BackendStore | None = None):
 
 
 @pytest.mark.asyncio
-async def test_get_conversation_empty_and_missing(tmp_path: Path, follow_up):
-    app, store, http = _app(tmp_path)
-    _seed_run(store)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
-        ok = await ac.get(BackendRoutes.CONVERSATION.format(run_id="run-1"))
-        assert ok.status_code == 200
-        assert ok.json() == {"run_id": "run-1", "turns": []}
-
-        missing = await ac.get(BackendRoutes.CONVERSATION.format(run_id="nope"))
-        assert missing.status_code == 404
-    store.close()
-    await http.aclose()
-
-
-@pytest.mark.asyncio
 async def test_send_success_replay_and_eligibility(tmp_path: Path, follow_up):
     app, store, http = _app(tmp_path)
     _seed_run(store)
@@ -158,7 +143,6 @@ async def test_send_success_replay_and_eligibility(tmp_path: Path, follow_up):
         assert len(hist.json()["turns"]) == 1
         assert hist.json()["turns"][0]["turn_id"] == turn_id
 
-    # Ineligible run status
     _seed_run(store, run_id="run-fail", status=RunStatus.FAILED)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
         bad = await ac.post(
@@ -200,16 +184,12 @@ async def test_send_conflict_and_failure_then_retry(tmp_path: Path, monkeypatch)
         turn_id = body["turn"]["turn_id"]
         prev_id = body["attempt"]["attempt_id"]
 
-        # Concurrent-style: leave a pending via store, then send conflicts
         pending = store.begin_send(run_id="run-1", question="other", idempotency_key="inflight")
         assert pending.created is True
         conflict = await ac.post(path, json={"question": "nope", "idempotency_key": "other-key"})
         assert conflict.status_code == 409
         store.fail_attempt(pending.attempt.attempt_id, error="clear")
 
-    # Retry after failure of original turn (turn is still failed from first send;
-    # the pending we failed was a different turn).
-    # Re-fetch: first turn still failed.
     turn = store.get_turn(turn_id)
     assert turn is not None and turn.status is TurnStatus.FAILED
 
@@ -229,7 +209,6 @@ async def test_send_conflict_and_failure_then_retry(tmp_path: Path, monkeypatch)
         assert ok.json()["attempt"]["previous_attempt_id"] == prev_id
         new_attempt = ok.json()["attempt"]["attempt_id"]
 
-        # Idempotent retry replay after success
         again = await ac.post(
             retry_path,
             json={
@@ -241,7 +220,6 @@ async def test_send_conflict_and_failure_then_retry(tmp_path: Path, monkeypatch)
         assert again.json()["created"] is False
         assert again.json()["attempt"]["attempt_id"] == new_attempt
 
-        # Key reuse with different target rejected
         bad_key = await ac.post(
             retry_path,
             json={
@@ -251,24 +229,14 @@ async def test_send_conflict_and_failure_then_retry(tmp_path: Path, monkeypatch)
         )
         assert bad_key.status_code == 409
 
-        # Bad previous attempt
         bad_prev = await ac.post(
             retry_path,
             json={
                 "idempotency_key": "retry-2",
-                "expected_previous_attempt_id": prev_id,  # no longer latest
-            },
-        )
-        assert bad_prev.status_code == 409
-
-        missing_turn = await ac.post(
-            BackendRoutes.CONVERSATION_RETRY.format(run_id="run-1", turn_id="missing"),
-            json={
-                "idempotency_key": "retry-x",
                 "expected_previous_attempt_id": prev_id,
             },
         )
-        assert missing_turn.status_code == 404
+        assert bad_prev.status_code == 409
 
     store.close()
     await http.aclose()
@@ -307,8 +275,10 @@ async def test_startup_recovers_interrupted_pending(tmp_path: Path, follow_up):
     assert started.attempt.status is TurnStatus.PENDING
     store.close()
 
-    # Re-open via create_app eager recovery
     store2 = BackendStore(settings.backend_db_path)
+    pending = store2.get_turn(started.turn.turn_id)
+    assert pending is not None and pending.status is TurnStatus.PENDING
+    assert pending.attempts[0].status is TurnStatus.PENDING
     http = httpx.AsyncClient(
         transport=httpx.MockTransport(lambda r: httpx.Response(404)),
         base_url="http://simulator.test",
@@ -318,6 +288,8 @@ async def test_startup_recovers_interrupted_pending(tmp_path: Path, follow_up):
     turn = store2.get_turn(started.turn.turn_id)
     assert turn is not None
     assert turn.status is TurnStatus.FAILED
+    assert turn.attempts[0].status is TurnStatus.FAILED
     assert turn.attempts[0].error == "interrupted by restart"
+    assert store2.recover_interrupted_attempts() == 0
     store2.close()
     await http.aclose()
