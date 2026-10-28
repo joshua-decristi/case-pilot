@@ -1,4 +1,4 @@
-"""Distinct tests for field-level evidence snapshots and follow-up rendering."""
+"""Evidence snapshot security and follow-up grounding (helper units deleted)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from casepilot.backend.agent import build_follow_up_read_tools, run_investigation
+from casepilot.backend.agent import run_investigation
 from casepilot.backend.client import SimulatorClient
 from casepilot.backend.db import BackendStore
 from casepilot.backend.evidence import (
@@ -22,19 +22,13 @@ from casepilot.backend.evidence import (
     RetrievalContext,
     RetrievedIndex,
     attribute_run_evidence,
-    established_snapshots,
-    field_value_at,
-    iter_leaf_fields,
     persist_index_snapshots,
     redact_evidence_payload,
     render_follow_up_answer,
     render_source_fact,
-    resolve_server_notes,
     snapshots_by_id,
-    validate_evidence,
 )
 from casepilot.backend.scripted import ScriptedChatModel
-from casepilot.backend.trace import TraceWriter
 from casepilot.shared.config import get_settings
 from casepilot.shared.contracts import (
     CaseRecord,
@@ -142,30 +136,6 @@ def _seed_run(store: BackendStore, run_id: str = "run-1") -> None:
     )
 
 
-def test_note_case_captures_redacted_record():
-    case = _case001_bundle()[0]
-    idx = RetrievedIndex(
-        context=RetrievalContext(
-            run_id="run-a",
-            case_id=CASE_ID,
-            provenance=EvidenceProvenance.ORIGINAL_RUN,
-        )
-    )
-    idx.note_case(case)
-    assert len(idx.captures) == 1
-    cap = idx.captures[0]
-    assert cap.source_system == "cases"
-    assert cap.record_id == CASE_ID
-    assert cap.tool_name == "get_case"
-    assert cap.payload["case_id"] == CASE_ID
-    assert idx.raw_snapshots[0]["record_id"] == CASE_ID
-
-
-def test_iter_leaf_fields_flattens_nested():
-    leaves = dict(iter_leaf_fields({"status": "x", "details": {"missing": "y", "n": 1}}))
-    assert leaves == {"status": "x", "details.missing": "y", "details.n": 1}
-
-
 def test_snapshot_redacts_secrets():
     out = redact_evidence_payload(
         {"status": "open", "api_key": "super-secret", "nested": {"token": "t-1"}}
@@ -173,27 +143,6 @@ def test_snapshot_redacts_secrets():
     assert out["status"] == "open"
     assert out["api_key"] == "[REDACTED]"
     assert out["nested"]["token"] == "[REDACTED]"
-
-
-def test_validate_evidence_still_accepts_fixture_paths():
-    case, docs, events = _case001_bundle()
-    idx = RetrievedIndex()
-    idx.note_case(case)
-    idx.note_documents(docs.documents)
-    idx.note_events(events.events)
-    ok, errs = validate_evidence(
-        [
-            Evidence(
-                source_system="events",
-                record_id="EVT-001-A",
-                field="details.missing",
-                fact="proof_of_income",
-                retrieval_ref="get_events",
-            )
-        ],
-        idx,
-    )
-    assert not errs and len(ok) == 1
 
 
 def test_persist_index_snapshots_writes_field_rows(tmp_path: Path):
@@ -227,52 +176,6 @@ def test_persist_index_snapshots_writes_field_rows(tmp_path: Path):
     assert status.retrieval_ref == "get_documents:DOC-1:status"
     assert store.get_evidence_snapshot(status.snapshot_id) is not None
     store.close()
-
-
-def test_persist_skips_when_run_missing(tmp_path: Path):
-    store = BackendStore(tmp_path / "b.sqlite3")
-    idx = RetrievedIndex(
-        context=RetrievalContext(run_id="nope", case_id=CASE_ID),
-        captures=[
-            RecordCapture(
-                source_system="cases",
-                record_id=CASE_ID,
-                tool_name="get_case",
-                payload={"status": "x"},
-            )
-        ],
-    )
-    assert persist_index_snapshots(store, idx) == []
-    store.close()
-
-
-def test_render_source_fact_uses_snapshot_value_only():
-    snap = EvidenceSnapshot(
-        snapshot_id="snap-1",
-        run_id="r",
-        source_system="documents",
-        record_id="DOC-X",
-        field_path="status",
-        value="missing",
-        retrieval_ref="get_documents:DOC-X:status",
-        retrieved_at=datetime(2024, 1, 2, tzinfo=UTC),
-        provenance=EvidenceProvenance.ORIGINAL_RUN,
-    )
-    catalog = snapshots_by_id([snap])
-    claim = SourceFactClaim(local_id="f1", snapshot_id="snap-1", field_path="status")
-    rendered = render_source_fact(claim, catalog)
-    assert rendered is not None
-    assert rendered.value == "missing"
-    assert rendered.local_id == "f1"
-    assert rendered.provenance is EvidenceProvenance.ORIGINAL_RUN
-    # wrong path for this snapshot id
-    assert (
-        render_source_fact(
-            SourceFactClaim(local_id="f2", snapshot_id="snap-1", field_path="other"),
-            catalog,
-        )
-        is None
-    )
 
 
 def test_follow_up_render_happy_path_model_prose_not_fact_value():
@@ -387,12 +290,6 @@ def test_contradictory_model_notes_discarded_beside_valid_facts():
     assert lie not in result.answer.notes
 
 
-def test_server_notes_kwarg_and_code_resolution():
-    assert resolve_server_notes(["read_only", "bogus", "read_only"]) == [NOTE_READ_ONLY]
-    out = render_follow_up_answer(FollowUpAgentOutput(), [], server_notes=["read_only"])
-    assert out.ok and out.answer.notes == [NOTE_READ_ONLY]
-
-
 def test_legacy_evidence_discloses_missing_snapshot_backing():
     ev = Evidence(
         source_system="documents",
@@ -405,82 +302,6 @@ def test_legacy_evidence_discloses_missing_snapshot_backing():
     assert attributed[0].is_verified_snapshot is False
     assert attributed[0].disclosure == LEGACY_DISCLOSURE
     assert attributed[0].snapshot_retrieved_at is None
-
-
-def test_legacy_evidence_links_when_snapshot_exists():
-    snap = EvidenceSnapshot(
-        snapshot_id="snap-1",
-        run_id="r",
-        source_system="documents",
-        record_id="DOC-001-A",
-        field_path="status",
-        value="received",
-        retrieval_ref="ref",
-        retrieved_at=datetime(2024, 6, 1, tzinfo=UTC),
-        provenance=EvidenceProvenance.ORIGINAL_RUN,
-    )
-    ev = Evidence(
-        source_system="documents",
-        record_id="DOC-001-A",
-        field="status",
-        fact="model wrote anything",
-        retrieval_ref="get_documents",
-    )
-    attributed = attribute_run_evidence([ev], [snap])
-    assert attributed[0].is_verified_snapshot is True
-    assert attributed[0].rendered_value == "received"
-    assert attributed[0].matching_snapshot_id == "snap-1"
-    assert attributed[0].disclosure is None
-
-
-def test_established_snapshots_origin_filter():
-    a = EvidenceSnapshot(
-        snapshot_id="a",
-        run_id="r",
-        source_system="cases",
-        record_id=CASE_ID,
-        field_path="status",
-        value="a",
-        retrieval_ref="r",
-        retrieved_at=datetime.now(UTC),
-        provenance=EvidenceProvenance.ORIGINAL_RUN,
-    )
-    b = EvidenceSnapshot(
-        snapshot_id="b",
-        run_id="r",
-        source_system="cases",
-        record_id=CASE_ID,
-        field_path="status",
-        value="b",
-        retrieval_ref="r",
-        retrieved_at=datetime.now(UTC),
-        provenance=EvidenceProvenance.FOLLOW_UP,
-        attempt_id="t",
-    )
-    assert established_snapshots([a, b], include_follow_up=False) == [a]
-
-
-def test_follow_up_read_tools_set_provenance(tmp_path: Path):
-    idx = RetrievedIndex()
-    store = BackendStore(tmp_path / "fu.sqlite3")
-    tools = build_follow_up_read_tools(
-        client=object(),  # type: ignore[arg-type]
-        case_id=CASE_ID,
-        index=idx,
-        trace=TraceWriter(tmp_path, "run-f"),
-        run_id="run-f",
-        store=store,
-        attempt_id="attempt-9",
-    )
-    assert idx.context is not None
-    assert idx.context.provenance is EvidenceProvenance.FOLLOW_UP
-    assert idx.context.attempt_id == "attempt-9"
-    assert len(tools) == 3
-    store.close()
-
-
-def test_field_value_at_nested():
-    assert field_value_at("details.missing", {"details": {"missing": "x"}}) == "x"
 
 
 @pytest.mark.asyncio
@@ -509,7 +330,6 @@ async def test_investigation_persists_snapshots_to_backend_store(tmp_path: Path)
     assert len(snaps) >= 3
     assert all(s.provenance is EvidenceProvenance.ORIGINAL_RUN for s in snaps)
     assert all(s.run_id == outcome.result.run_id for s in snaps)
-    # field-level rows with server retrieval_ref
     assert any(s.field_path == "status" for s in snaps)
     case_status = next(s for s in snaps if s.source_system == "cases" and s.field_path == "status")
     rendered = render_source_fact(

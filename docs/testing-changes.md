@@ -63,3 +63,13 @@ No cross-slice equivalence claims.
 **Retained:** Pre-turn fail-closed / not-assessed honesty and collector behaviors that would otherwise hide invalid pilot runs.
 
 **Accepted loss:** Redundant event-schema and tracing-plumbing asserts; exact emission shape volume.
+
+## 6. Follow-up + evidence snapshots (shared guarantees)
+
+**Files:** `tests/unit/test_followup.py`, `test_evidence_snapshots.py`; delete `test_followup_output_diagnostics.py`, `test_followup_render_diagnostics.py`
+
+**Change:** Focused follow-up agent units (incl. timeout→failed restore) and evidence snapshot security/grounding; remove render/output diagnostics files entirely (no replacement).
+
+**Retained:** Representative follow-up including timeout→failed; evidence snapshot isolation/grounding and sensitive handling shared with follow-up path.
+
+**Accepted loss:** Exact render/parser/follow-up diagnostics files and their assertion volume — deleted without replacement.

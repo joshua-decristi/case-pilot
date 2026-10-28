@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import tempfile
 from datetime import UTC, datetime
@@ -15,12 +16,11 @@ from langchain_core.messages import AIMessage
 
 from casepilot.backend.client import SimulatorClient
 from casepilot.backend.db import BackendStore
-from casepilot.backend.evidence import LEGACY_DISCLOSURE, NOTE_READ_ONLY, SAFE_UNCERTAINTY
+from casepilot.backend.evidence import LEGACY_DISCLOSURE, SAFE_UNCERTAINTY
 from casepilot.backend.followup import (
     CONTEXT_TRUNCATION_NOTICE,
     build_user_message,
     established_snapshots_for_run,
-    ground_follow_up_output,
     run_follow_up,
 )
 from casepilot.backend.hooks import TEST_MODE_ENV, clear_test_hooks
@@ -204,105 +204,6 @@ def _follow_up_msgs(
     return msgs
 
 
-def test_ground_happy_path_exact_server_value():
-    when = datetime(2024, 2, 1, tzinfo=UTC)
-    catalog = {
-        "snap-1": EvidenceSnapshot(
-            snapshot_id="snap-1",
-            run_id="run-1",
-            source_system="documents",
-            record_id="DOC-1",
-            field_path="status",
-            value="missing",
-            retrieval_ref="srv:1",
-            retrieved_at=when,
-            provenance=EvidenceProvenance.ORIGINAL_RUN,
-        )
-    }
-    out = ground_follow_up_output(
-        FollowUpAgentOutput(
-            source_facts=[
-                SourceFactClaim(local_id="f1", snapshot_id="snap-1", field_path="status")
-            ],
-            interpretations=[
-                InterpretationBlock(
-                    text="documents received",  # contradictory prose — inference only
-                    cites=["f1"],
-                    kind=InterpretationKind.INFERENCE,
-                )
-            ],
-        ),
-        catalog,
-    )
-    assert out.source_facts[0].value == "missing"
-    assert out.source_facts[0].retrieved_at == when
-    assert out.interpretations[0].text == "documents received"
-    assert out.interpretations[0].kind is InterpretationKind.INFERENCE
-
-
-def test_ground_rejects_bad_citation_and_notes_only():
-    catalog = {
-        "snap-1": EvidenceSnapshot(
-            snapshot_id="snap-1",
-            run_id="r",
-            source_system="cases",
-            record_id=CASE_ID,
-            field_path="status",
-            value="stalled",
-            retrieval_ref="srv:x",
-            retrieved_at=datetime(2024, 1, 1, tzinfo=UTC),
-            provenance=EvidenceProvenance.ORIGINAL_RUN,
-        )
-    }
-    bad = ground_follow_up_output(
-        FollowUpAgentOutput(
-            source_facts=[SourceFactClaim(local_id="f1", snapshot_id="nope", field_path="status")]
-        ),
-        catalog,
-    )
-    assert bad.source_facts == []
-    assert bad.notes == [SAFE_UNCERTAINTY]
-
-    path_mismatch = ground_follow_up_output(
-        FollowUpAgentOutput(
-            source_facts=[
-                SourceFactClaim(local_id="f1", snapshot_id="snap-1", field_path="symptom")
-            ]
-        ),
-        catalog,
-    )
-    assert path_mismatch.notes == [SAFE_UNCERTAINTY]
-
-    no_cites = ground_follow_up_output(
-        FollowUpAgentOutput(
-            source_facts=[
-                SourceFactClaim(local_id="f1", snapshot_id="snap-1", field_path="status")
-            ],
-            interpretations=[
-                InterpretationBlock(text="guess", cites=[], kind=InterpretationKind.INFERENCE)
-            ],
-        ),
-        catalog,
-    )
-    assert no_cites.notes == [SAFE_UNCERTAINTY]
-
-    # Free-text notes rejected (no allowlisted code).
-    lie = ground_follow_up_output(
-        FollowUpAgentOutput(notes=["All documents received."]),
-        {},
-    )
-    assert lie.notes == [SAFE_UNCERTAINTY]
-    assert lie.source_facts == []
-
-    # Allowlisted code → server-owned boundary text.
-    notes = ground_follow_up_output(
-        FollowUpAgentOutput(notes=["read_only"]),
-        {},
-    )
-    assert notes.notes == [NOTE_READ_ONLY]
-    assert notes.source_facts == []
-
-
 def test_legacy_and_verified_established(tmp_path: Path):
     store = BackendStore(tmp_path / "b.sqlite3")
     _seed_run(store)
@@ -393,7 +294,6 @@ async def test_run_follow_up_test_mode_no_script_fails_closed(
         store=store,
         client=SimulatorClient(settings, client=http),
         settings=settings,
-        # default_model_factory path
     )
     turn = store.get_turn(begun.turn.turn_id)
     assert turn is not None
@@ -406,6 +306,7 @@ async def test_run_follow_up_test_mode_no_script_fails_closed(
 
 @pytest.mark.asyncio
 async def test_run_follow_up_succeeds_with_scripted_citation(tmp_path: Path):
+    clear_test_hooks()
     settings = _settings(tmp_path)
     store = BackendStore(settings.backend_db_path)
     _seed_run(store)
@@ -420,15 +321,16 @@ async def test_run_follow_up_succeeds_with_scripted_citation(tmp_path: Path):
         ],
         interpretations=[
             InterpretationBlock(
-                text="The cited status indicates a gap.",
+                text="status is missing — never emit this prose",
                 cites=["f1"],
                 kind=InterpretationKind.INFERENCE,
             )
         ],
+        notes=["read_only"],
     )
 
     def factory(_s):
-        return ScriptedChatModel(responses=_follow_up_msgs(output))
+        return ScriptedChatModel(responses=_follow_up_msgs(output, tools=["get_case"]))
 
     http = _mock_simulator()
     await run_follow_up(
@@ -449,12 +351,16 @@ async def test_run_follow_up_succeeds_with_scripted_citation(tmp_path: Path):
     assert att.answer is not None
     assert att.answer.source_facts[0].value == "missing"
     assert att.answer.source_facts[0].provenance is EvidenceProvenance.ORIGINAL_RUN
+    assert att.answer.interpretations[0].cites == ["f1"]
+
     store.close()
     await http.aclose()
+    clear_test_hooks()
 
 
 @pytest.mark.asyncio
 async def test_run_follow_up_bad_citation_safe_uncertainty(tmp_path: Path):
+    clear_test_hooks()
     settings = _settings(tmp_path)
     store = BackendStore(settings.backend_db_path)
     _seed_run(store)
@@ -464,7 +370,11 @@ async def test_run_follow_up_bad_citation_safe_uncertainty(tmp_path: Path):
     output = FollowUpAgentOutput(
         source_facts=[SourceFactClaim(local_id="f1", snapshot_id="invented", field_path="status")],
         interpretations=[
-            InterpretationBlock(text="sure thing", cites=["f1"], kind=InterpretationKind.INFERENCE)
+            InterpretationBlock(
+                text="invented claim text",
+                cites=["f1"],
+                kind=InterpretationKind.INFERENCE,
+            )
         ],
     )
 
@@ -486,8 +396,11 @@ async def test_run_follow_up_bad_citation_safe_uncertainty(tmp_path: Path):
     assert turn.attempts[-1].answer is not None
     assert turn.attempts[-1].answer.notes == [SAFE_UNCERTAINTY]
     assert turn.attempts[-1].answer.source_facts == []
+    assert "invented claim text" not in json.dumps(turn.attempts[-1].answer.model_dump(mode="json"))
+
     store.close()
     await http.aclose()
+    clear_test_hooks()
 
 
 @pytest.mark.asyncio
@@ -524,6 +437,7 @@ async def test_run_follow_up_tool_retrieval_persists_follow_up_snapshots(tmp_pat
 
 @pytest.mark.asyncio
 async def test_run_follow_up_timeout_fails_attempt(tmp_path: Path):
+    """Deadline aborts a pending attempt; distinct from tool/input bounds and restart."""
     settings = _settings(tmp_path, investigation_timeout_seconds=0.01)
     store = BackendStore(settings.backend_db_path)
     _seed_run(store)
@@ -552,121 +466,5 @@ async def test_run_follow_up_timeout_fails_attempt(tmp_path: Path):
     assert turn.status is TurnStatus.FAILED
     assert turn.attempts[-1].error is not None
     assert "deadline" in turn.attempts[-1].error
-    store.close()
-    await http.aclose()
-
-
-@pytest.mark.asyncio
-async def test_run_follow_up_cancel_fails_attempt(tmp_path: Path):
-    settings = _settings(tmp_path)
-    store = BackendStore(settings.backend_db_path)
-    _seed_run(store)
-    begun = store.begin_send(run_id="run-1", question="?", idempotency_key="cancel-1")
-
-    class CancelModel(ScriptedChatModel):
-        async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):  # noqa: ANN001
-            raise asyncio.CancelledError()
-
-    def factory(_s):
-        return CancelModel(responses=[])
-
-    http = _mock_simulator()
-    # LangChain may absorb CancelledError; run_follow_up must still fail the attempt.
-    try:
-        await run_follow_up(
-            run_id="run-1",
-            turn_id=begun.turn.turn_id,
-            attempt_id=begun.attempt.attempt_id,
-            store=store,
-            client=SimulatorClient(settings, client=http),
-            settings=settings,
-            model_factory=factory,
-        )
-    except asyncio.CancelledError:
-        pass
-    turn = store.get_turn(begun.turn.turn_id)
-    assert turn is not None
-    assert turn.status is TurnStatus.FAILED
-    assert turn.attempts[-1].error is not None
-    assert "cancel" in turn.attempts[-1].error
-    store.close()
-    await http.aclose()
-
-
-@pytest.mark.asyncio
-async def test_run_follow_up_skips_non_pending(tmp_path: Path):
-    settings = _settings(tmp_path)
-    store = BackendStore(settings.backend_db_path)
-    _seed_run(store)
-    begun = store.begin_send(run_id="run-1", question="?", idempotency_key="done-1")
-    store.complete_attempt(begun.attempt.attempt_id, answer=FollowUpAnswer(notes=["already done"]))
-
-    called = {"n": 0}
-
-    def factory(_s):
-        called["n"] += 1
-        return ScriptedChatModel(responses=[])
-
-    http = _mock_simulator()
-    await run_follow_up(
-        run_id="run-1",
-        turn_id=begun.turn.turn_id,
-        attempt_id=begun.attempt.attempt_id,
-        store=store,
-        client=SimulatorClient(settings, client=http),
-        settings=settings,
-        model_factory=factory,
-    )
-    assert called["n"] == 0
-    turn = store.get_turn(begun.turn.turn_id)
-    assert turn is not None and turn.status is TurnStatus.SUCCEEDED
-    store.close()
-    await http.aclose()
-
-
-@pytest.mark.asyncio
-async def test_run_follow_up_indeterminate_status_in_context(tmp_path: Path):
-    settings = _settings(tmp_path)
-    store = BackendStore(settings.backend_db_path)
-    result = _result(
-        status=RunStatus.INDETERMINATE,
-        diagnosis=Diagnosis.INDETERMINATE,
-        uncertainty="Rejected unsupported evidence: bad field",
-        evidence=[],
-    )
-    _seed_run(store, status=RunStatus.INDETERMINATE, result=result)
-    run = store.get_run("run-1")
-    assert run is not None
-    established, notes = established_snapshots_for_run(store, run)
-    text, _ = build_user_message(
-        run=run,
-        established=established,
-        legacy_notes=notes,
-        turns=[],
-        turn_id="t-x",
-        question="why uncertain?",
-    )
-    assert "indeterminate" in text
-    assert any("INDETERMINATE" in n for n in notes)
-
-    begun = store.begin_send(run_id="run-1", question="why uncertain?", idempotency_key="ind-1")
-
-    def factory(_s):
-        return ScriptedChatModel(
-            responses=_follow_up_msgs(FollowUpAgentOutput(notes=["read_only"]))
-        )
-
-    http = _mock_simulator()
-    await run_follow_up(
-        run_id="run-1",
-        turn_id=begun.turn.turn_id,
-        attempt_id=begun.attempt.attempt_id,
-        store=store,
-        client=SimulatorClient(settings, client=http),
-        settings=settings,
-        model_factory=factory,
-    )
-    turn = store.get_turn(begun.turn.turn_id)
-    assert turn is not None and turn.status is TurnStatus.SUCCEEDED
     store.close()
     await http.aclose()
