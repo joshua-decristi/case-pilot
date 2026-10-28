@@ -43,3 +43,13 @@ No cross-slice equivalence claims.
 **Retained:** Judge fail-closed on invalid/malformed outcomes; dimension assessment contracts that gate false quality claims.
 
 **Accepted loss:** Broad judge helper/branch matrix and repetitive serialization/plumbing asserts.
+
+## 5a. Pilot safety
+
+**Files:** `tests/unit/test_pilot_safety.py`
+
+**Change:** Adversarial pilot safety suite trimmed to high-impact phase/scenario safety checks.
+
+**Retained:** Deterministic safety assessment for forbidden attempts, task/proposal state facts, and phase safety evidence needed to catch unsafe pilot progression.
+
+**Accepted loss:** Exhaustive safety micro-fact combinations and low-signal repetition.
