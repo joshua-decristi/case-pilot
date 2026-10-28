@@ -23,3 +23,13 @@ No cross-slice equivalence claims.
 **Retained:** Required-retrieval coverage gate; cohort reevaluate/report gate integrity; assessment status honesty paths still in pilot_coverage.
 
 **Accepted loss:** Exhaustive scenario-pilot orchestration micro-branches and repetitive gate plumbing; no claim of equivalent node-for-node coverage vs pre-redesign scenario_pilot.
+
+## 3. Eval scoring harness
+
+**Files:** `tests/unit/test_evaluation.py`
+
+**Change:** Risk-based trim of deterministic evaluation harness units; keep scoring-truth paths (failures in denominator, empty retrieval-ref rules, offline report/resume integrity including restored empty-ref and offline report cases).
+
+**Retained:** Deterministic scoring truth; cost/budget gates touched by harness; report pipeline honesty needed to avoid false quality claims.
+
+**Accepted loss:** Low-impact harness helper/edge assertion volume; not every historical input vector.

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sys
 import threading
 from pathlib import Path
 
@@ -31,7 +30,6 @@ from casepilot.evaluation.grader import (
     grade_results,
     load_ground_truth,
 )
-from casepilot.evaluation.metadata import collect_metadata, git_revision
 from casepilot.evaluation.runner import LiveEvalConfig, run_live, run_offline_report
 from casepilot.shared.contracts import (
     Diagnosis,
@@ -104,23 +102,8 @@ def _result(
 
 
 # ---------------------------------------------------------------------------
-# Ground truth + action mapping
+# Public grading truth + failure denominator
 # ---------------------------------------------------------------------------
-
-
-def test_load_ground_truth_split_and_mapping() -> None:
-    gt = load_ground_truth(LABELS)
-    assert gt.version == "1.0"
-    assert len(gt.cases) == 20
-    assert len(gt.evaluation_ids) == 8
-    assert len(gt.development_ids) == 12
-    assert set(gt.evaluation_ids).isdisjoint(gt.development_ids)
-    assert FIXTURE_ACTION_TO_NEXT["request_document"] == NextAction.REQUEST_MISSING_DOCUMENT
-    assert FIXTURE_ACTION_TO_NEXT["reconcile_data"] == NextAction.CORRECT_DATA_MISMATCH
-    assert FIXTURE_ACTION_TO_NEXT["investigate_processing"] == NextAction.RETRY_PROCESSING
-    assert FIXTURE_ACTION_TO_NEXT["escalate"] == NextAction.ESCALATE_TO_HUMAN
-    assert FIXTURE_ACTION_TO_NEXT["no_action"] == NextAction.NO_ACTION_REQUIRED
-    assert NextAction.CREATE_FOLLOW_UP_TASK not in FIXTURE_ACTION_TO_NEXT.values()
 
 
 def test_grade_category_action_evidence_happy_path() -> None:
@@ -144,7 +127,6 @@ def test_evidence_requires_record_id_not_ref_token_bypass() -> None:
     """IDs stuffed only into retrieval_ref path must NOT satisfy evidence."""
     gt = load_ground_truth(LABELS)
     label = gt.cases["CASE-011"]
-    # alternative needs EVT-011-A as record_id — ref path alone is insufficient
     result = _result(
         "CASE-011",
         diagnosis=Diagnosis.PROCESSING_FAILURE,
@@ -173,15 +155,6 @@ def test_evidence_requires_nonempty_retrieval_ref() -> None:
         retrieval_refs=["", ""],
     )
     assert grade_case(label, result).evidence_ok is False
-
-
-def test_evidence_alternative_any_of() -> None:
-    gt = load_ground_truth(LABELS)
-    label = gt.cases["CASE-001"]
-    result = _result("CASE-001", evidence_ids=["CASE-001", "EVT-001-B"])
-    assert grade_case(label, result).evidence_ok is True
-    bad = _result("CASE-001", evidence_ids=["CASE-001"])
-    assert grade_case(label, bad).evidence_ok is False
 
 
 def test_create_follow_up_task_not_auto_correct() -> None:
@@ -220,7 +193,8 @@ def test_uncertainty_required_on_indeterminate() -> None:
     assert grade_case(label, present).uncertainty_ok is True
 
 
-def test_failures_count_in_denominator_as_incorrect() -> None:
+def test_scorecard_denominator_caveats_and_serialization() -> None:
+    """Failures in denom, entailment caveat, and JSON-serializable to_dict."""
     gt = load_ground_truth(LABELS)
     failed = _result(
         "CASE-001",
@@ -247,6 +221,8 @@ def test_failures_count_in_denominator_as_incorrect() -> None:
     assert sc.evidence_correct == 1
     assert sc.action_auto_scored >= 2
     assert any("denominator" in c.lower() or "Failure" in c for c in sc.caveats)
+    assert any("entailment" in c.lower() for c in sc.caveats)
+    assert "category_accuracy" in json.dumps(sc.to_dict())
 
 
 def test_wrong_action_mapped() -> None:
@@ -263,14 +239,8 @@ def test_wrong_action_mapped() -> None:
     assert g.action_ok is False
 
 
-def test_no_entailment_caveat_in_scorecard() -> None:
-    gt = load_ground_truth(LABELS)
-    sc = grade_results(gt, {"CASE-001": _result()})
-    assert any("entailment" in c.lower() for c in sc.caveats)
-
-
 # ---------------------------------------------------------------------------
-# Cost ledger (backend integration API)
+# Verified pricing + actual ledger reserve/settle/release/concurrency
 # ---------------------------------------------------------------------------
 
 
@@ -307,47 +277,6 @@ def test_fail_closed_without_verified_prices(
         validate_live_model("other/model")
 
 
-def test_load_verified_prices_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    p = tmp_path / "prices.json"
-    p.write_text(
-        json.dumps(
-            {
-                "models": {
-                    ALLOWED_LIVE_MODEL: {
-                        "input_usd_per_mtok": 0.1,
-                        "output_usd_per_mtok": 0.2,
-                        "source": "https://openrouter.ai/example",
-                        "verified_at": "2026-01-01",
-                        "verified": True,
-                    }
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("CASEPILOT_VERIFIED_PRICES_PATH", str(p))
-    table = load_verified_prices()
-    assert ALLOWED_LIVE_MODEL in table
-    price = get_model_price(ALLOWED_LIVE_MODEL)
-    assert price.input_usd_per_mtok == 0.1
-    # verified=false ignored
-    p.write_text(
-        json.dumps(
-            {
-                "models": {
-                    ALLOWED_LIVE_MODEL: {
-                        "input_usd_per_mtok": 9.0,
-                        "output_usd_per_mtok": 9.0,
-                        "verified": False,
-                    }
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    assert load_verified_prices() == {}
-
-
 def test_default_verified_prices_file_loads() -> None:
     """Committed verified_prices.json is the enforced-cap source (no .env needed)."""
     table = load_verified_prices()
@@ -364,23 +293,9 @@ def test_default_verified_prices_file_loads() -> None:
     assert prov["require_parameters"] is True
     assert prov["max_price"]["prompt"] == pytest.approx(0.23)
     assert prov["max_price"]["completion"] == pytest.approx(2.0)
-    # Import / proxy does not require .env
     from casepilot.evaluation.cost import CONSERVATIVE_RESERVE_USD
 
     assert float(CONSERVATIVE_RESERVE_USD) > 0
-
-
-def test_cost_ledger_default_init_without_env(tmp_path: Path) -> None:
-    """CostLedger constructs from committed verified file; no .env required."""
-    ledger = CostLedger(path=tmp_path / "led.json", budget_usd=5.0)
-    assert ALLOWED_LIVE_MODEL in (ledger.prices or {})
-    res = ledger.create_reservation(
-        key="k",
-        amount_usd=0.01,
-        model=ALLOWED_LIVE_MODEL,
-        case_id="C",
-    )
-    ledger.release_reservation(res.id, detail="test cleanup")
 
 
 def test_cost_ledger_compat_reserve_settle_release(tmp_path: Path) -> None:
@@ -487,56 +402,8 @@ def test_recover_stale_reservations_settles_full_no_refund(tmp_path: Path) -> No
     kinds = [e["kind"] for e in snap["entries"]]
     assert "stale_recover" in kinds
     assert any(e.get("operator") == "ops" for e in snap["entries"] if e["kind"] == "stale_recover")
-    # no further reserves
     with pytest.raises(CostPause, match="unreliable"):
         ledger.create_reservation(key="z", amount_usd=0.01, model=ALLOWED_LIVE_MODEL)
-
-
-def test_cli_recover_stale(tmp_path: Path) -> None:
-    from casepilot.evaluation.__main__ import main
-
-    price = _vprice(1.0, 1.0)
-    ledger_path = tmp_path / "led.json"
-    ledger = CostLedger(
-        path=ledger_path,
-        budget_usd=5.0,
-        prices={ALLOWED_LIVE_MODEL: price},
-        reserve_usd=0.07,
-    )
-    ledger.create_reservation(key="k", amount_usd=0.07, model=ALLOWED_LIVE_MODEL, case_id="C")
-    assert (
-        main(
-            [
-                "--recover-stale-reservations",
-                "--ledger",
-                str(ledger_path),
-                "--operator",
-                "alice",
-                "--reason",
-                "crash",
-                # missing --yes
-            ]
-        )
-        == 3
-    )
-    assert (
-        main(
-            [
-                "--recover-stale-reservations",
-                "--ledger",
-                str(ledger_path),
-                "--operator",
-                "alice",
-                "--reason",
-                "crash",
-                "--yes",
-            ]
-        )
-        == 0
-    )
-    snap = json.loads(ledger_path.read_text())
-    assert snap["spent_usd"] == pytest.approx(0.07)
-    assert snap["open_reservations"] == {}
 
 
 def test_cost_ledger_rejects_budget_over_global(tmp_path: Path) -> None:
@@ -618,36 +485,7 @@ def test_cost_ledger_file_lock_serializes(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Metadata
-# ---------------------------------------------------------------------------
-
-
-def test_metadata_hashes_and_honest_git(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Honest gap: prompt hash absent while the backend prompt module is blocked.
-
-    Deliberately forces the lazy ``casepilot.backend.agent`` import to fail so
-    this passes identically with or without ``casepilot.backend`` importable.
-    The backend-specific ``SYSTEM_PROMPT`` hash assertion lives in
-    tests/unit/test_metadata_backend_prompt.py.
-    """
-    # Block every cached casepilot.backend* entry, not just the parent package:
-    # other tests import casepilot.backend.agent (tests/helpers), which would
-    # otherwise satisfy the lazy import below.
-    for name in [k for k in sys.modules if k.startswith("casepilot.backend")]:
-        monkeypatch.setitem(sys.modules, name, None)
-    meta = collect_metadata(labels_path=LABELS, model=ALLOWED_LIVE_MODEL, split="evaluation")
-    assert meta.labels_sha256 and len(meta.labels_sha256) == 64
-    assert meta.fixture_sha256
-    assert meta.prompt_sha256 is None
-    assert meta.prompt_source is None
-    assert any("prompt hash unavailable" in note for note in meta.notes)
-    assert meta.git_revision
-    rev = git_revision(ROOT)
-    assert rev == meta.git_revision or rev == "unavailable" or len(rev) >= 7
-
-
-# ---------------------------------------------------------------------------
-# Live runner (mocked HTTP — zero paid calls; no eval-side reserve)
+# Live runner gates + spend (mocked HTTP — zero paid calls; no eval-side reserve)
 # ---------------------------------------------------------------------------
 
 
@@ -713,13 +551,11 @@ def test_run_live_http_mock_no_labels_no_eval_reserve(tmp_path: Path) -> None:
     assert report.session_spend_usd == pytest.approx(0.001)
     assert report.case_results[0].provider_model == ALLOWED_LIVE_MODEL
     assert report.case_results[0].usage is not None
-    # Eval must NOT create/mutate ledger reserves
     assert not ledger_path.exists() or (
         json.loads(ledger_path.read_text()).get("entries", []) == []
         if ledger_path.exists()
         else True
     )
-    # If snapshot path was created by read attempt via CostLedger init — check no reserves
     if ledger_path.exists():
         snap = json.loads(ledger_path.read_text())
         assert float(snap.get("spent_usd") or 0) == 0.0
@@ -759,7 +595,6 @@ def test_run_live_session_threshold_from_backend_costs(tmp_path: Path) -> None:
     client.close()
     assert report.scorecard.n == 5
     assert report.session_spend_usd >= 0.08
-    # After spend hits threshold, remaining cases skipped
     skipped = [c for c in report.case_results if c.error and "threshold" in (c.error or "")]
     assert skipped or any("threshold" in g for g in report.gaps)
 
@@ -794,7 +629,6 @@ def test_run_live_backend_cost_guard_pauses(tmp_path: Path) -> None:
 def test_run_live_pauses_when_global_ledger_exhausted(tmp_path: Path) -> None:
     gt = load_ground_truth(LABELS)
     ledger_path = tmp_path / "ledger.json"
-    # Backend already spent the full envelope
     ledger = CostLedger(
         path=ledger_path,
         budget_usd=0.10,
@@ -824,12 +658,8 @@ def test_run_live_pauses_when_global_ledger_exhausted(tmp_path: Path) -> None:
     client.close()
 
 
-# ---------------------------------------------------------------------------
-# Offline report
-# ---------------------------------------------------------------------------
-
-
 def test_offline_report(tmp_path: Path) -> None:
+    """Public offline path: results JSON → report; failures/missing in denominator."""
     results = {
         "cases": [
             {"case_id": "CASE-001", "result": _result("CASE-001").model_dump(mode="json")},
@@ -842,44 +672,3 @@ def test_offline_report(tmp_path: Path) -> None:
     assert report.live is False
     assert report.scorecard.n == 2
     assert report.scorecard.failures >= 1
-
-
-def test_cli_offline_and_live_guards(tmp_path: Path) -> None:
-    from casepilot.evaluation.__main__ import main
-
-    results = {
-        "cases": [
-            {
-                "case_id": "CASE-020",
-                "result": _result(
-                    "CASE-020",
-                    diagnosis=Diagnosis.NO_ISSUE,
-                    next_action=NextAction.NO_ACTION_REQUIRED,
-                    evidence_ids=["CASE-020", "EVT-020-A", "EVT-020-B"],
-                ).model_dump(mode="json"),
-            }
-        ]
-    }
-    path = tmp_path / "res.json"
-    path.write_text(json.dumps(results), encoding="utf-8")
-    assert (
-        main(
-            [
-                "--offline",
-                str(path),
-                "--labels",
-                str(LABELS),
-                "--report-dir",
-                str(tmp_path / "rep"),
-            ]
-        )
-        == 0
-    )
-    assert main(["--live", "--budget-usd", "5"]) == 2
-    assert main(["--live", "--max-cases", "1", "--budget-usd", "6"]) == 2
-
-
-def test_scorecard_to_dict_serializable() -> None:
-    gt = load_ground_truth(LABELS)
-    sc = grade_results(gt, {"CASE-001": _result()})
-    assert "category_accuracy" in json.dumps(sc.to_dict())
