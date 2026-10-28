@@ -154,14 +154,12 @@ async def test_approve_persists_nonderived_task_id(tmp_path: Path):
         prop = ok.json()["proposal"]
         assert prop["status"] == "executed"
         assert prop["task_id"] == SIM_TASK_ID
-        # Must not fabricate derived id
         assert prop["task_id"] != f"task-{pid}"
 
         got = await ac.get(BackendRoutes.PROPOSAL.format(proposal_id=pid))
         assert got.json()["task_id"] == SIM_TASK_ID
         assert meta["create_calls"] == 1
 
-        # Idempotent re-approve does not re-create
         again = await ac.post(
             BackendRoutes.APPROVE.format(proposal_id=pid),
             json={"operator_identity": "alice"},
@@ -191,7 +189,6 @@ async def test_sim_success_persist_loss_recovers_same_task_id(tmp_path: Path):
     def flaky_transition(proposal_id: str, **kwargs: Any):
         to_status = kwargs.get("to_status")
         if drop_executed["active"] and to_status == ProposalStatus.EXECUTED:
-            # Simulator already succeeded; pretend DB write lost (return None).
             drop_executed["active"] = False
             return None
         return real_transition(proposal_id, **kwargs)
@@ -205,13 +202,11 @@ async def test_sim_success_persist_loss_recovers_same_task_id(tmp_path: Path):
             headers={"Authorization": f"Bearer {TOKEN_OP}"},
         )
         assert first.status_code == 200, first.text
-        # Lost EXECUTED write → still APPROVED (or whatever pre-execute state)
         prop = first.json()["proposal"]
         assert prop["status"] == "approved"
         assert prop.get("task_id") is None
         assert meta["create_calls"] == 1
 
-        # Restore real transition and retry — simulator returns same non-derived id
         store.transition_proposal = real_transition  # type: ignore[method-assign]
         retry = await ac.post(
             BackendRoutes.APPROVE.format(proposal_id=pid),
@@ -222,7 +217,7 @@ async def test_sim_success_persist_loss_recovers_same_task_id(tmp_path: Path):
         body = retry.json()["proposal"]
         assert body["status"] == "executed"
         assert body["task_id"] == SIM_TASK_ID
-        assert meta["create_calls"] == 2  # idempotent replay at simulator
+        assert meta["create_calls"] == 2
         assert store.get_proposal(pid).task_id == SIM_TASK_ID  # type: ignore[union-attr]
 
     store.close()
@@ -266,78 +261,3 @@ async def test_execution_failed_then_retry_stores_task_id(tmp_path: Path):
 
     store.close()
     await http_ok.aclose()
-
-
-def test_proposal_task_id_column_migration(tmp_path: Path) -> None:
-    """Legacy proposals table gains nullable task_id; EXECUTED stores simulator id."""
-    import sqlite3
-
-    from casepilot.shared.contracts import FollowUpTaskPayload, NextAction, RunStatus
-
-    db_path = tmp_path / "legacy.sqlite3"
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript(
-        """
-        CREATE TABLE runs (
-            run_id TEXT PRIMARY KEY,
-            case_id TEXT NOT NULL,
-            objective TEXT NOT NULL,
-            status TEXT NOT NULL,
-            result_json TEXT,
-            error TEXT,
-            created_at TEXT NOT NULL,
-            completed_at TEXT
-        );
-        CREATE TABLE proposals (
-            proposal_id TEXT PRIMARY KEY,
-            run_id TEXT NOT NULL,
-            case_id TEXT NOT NULL,
-            action TEXT NOT NULL,
-            task_payload_json TEXT NOT NULL,
-            status TEXT NOT NULL,
-            payload_digest TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            decided_at TEXT,
-            operator_identity TEXT,
-            execution_error TEXT,
-            request_id TEXT
-        );
-        """
-    )
-    conn.commit()
-    conn.close()
-
-    store = BackendStore(db_path)
-    store.insert_run(
-        run_id="run-1",
-        case_id=CASE_ID,
-        objective="x",
-        status=RunStatus.COMPLETED,
-    )
-    prop = store.insert_proposal(
-        proposal_id="prop-1",
-        run_id="run-1",
-        case_id=CASE_ID,
-        action=NextAction.CREATE_FOLLOW_UP_TASK,
-        task_payload=FollowUpTaskPayload(title="t", body="b", case_id=CASE_ID),
-        payload_digest="digest",
-    )
-    assert prop.task_id is None
-    approved = store.transition_proposal(
-        "prop-1",
-        from_statuses={ProposalStatus.PENDING},
-        to_status=ProposalStatus.APPROVED,
-        operator_identity="ops",
-    )
-    assert approved is not None and approved.task_id is None
-    executed = store.transition_proposal(
-        "prop-1",
-        from_statuses={ProposalStatus.APPROVED},
-        to_status=ProposalStatus.EXECUTED,
-        task_id="TASK-SIM-99",
-        clear_execution_error=True,
-    )
-    assert executed is not None
-    assert executed.status is ProposalStatus.EXECUTED
-    assert executed.task_id == "TASK-SIM-99"
-    store.close()

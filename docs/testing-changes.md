@@ -83,3 +83,13 @@ No cross-slice equivalence claims.
 **Retained:** Conversation persistence atomicity and retry recovery; route-level create/read behaviors needed for restart-safe follow-up continuity.
 
 **Accepted loss:** Redundant route-template and store helper asserts.
+
+## 8a. Approval identity and denial boundary
+
+**Files:** `tests/unit/test_approval_task_id.py`, `test_approval_attempt_tracing.py`
+
+**Change:** Keep non-derived task_id guarantees; reduce attempt tracing to unauthorized-approve denied at boundary. Drop proposal task_id column migration unit.
+
+**Retained:** Approval task_id correctness; unauthorized callers cannot approve (denial at boundary).
+
+**Accepted loss:** Auth-denial **trace emission schema** (behavior retained, schema not); migration micro-test.

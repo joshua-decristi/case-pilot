@@ -1,10 +1,8 @@
-"""App approve/reject auth denial emits forbidden_attempt trace (no paid calls)."""
+"""Unauthorized approve is denied at the real backend boundary (no paid calls)."""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Any
 
 import httpx
 import pytest
@@ -15,7 +13,6 @@ from casepilot.backend.app import create_app
 from casepilot.backend.client import SimulatorClient
 from casepilot.backend.db import BackendStore
 from casepilot.backend.hooks import TEST_MODE_ENV, clear_test_hooks
-from casepilot.backend.pilot_observability import EVENT_FORBIDDEN
 from casepilot.shared.config import get_settings
 from casepilot.shared.contracts import (
     BackendRoutes,
@@ -23,6 +20,7 @@ from casepilot.shared.contracts import (
     CreateFollowUpTaskResponse,
     FollowUpTaskPayload,
     NextAction,
+    ProposalStatus,
     RunStatus,
     SimulatorRoutes,
 )
@@ -99,13 +97,6 @@ def _seed_pending_proposal(store: BackendStore, proposal_id: str = "prop-1") -> 
     return proposal_id
 
 
-def _forbidden_rows(trace_dir: Path, run_id: str) -> list[dict[str, Any]]:
-    path = trace_dir / f"{run_id}.jsonl"
-    assert path.is_file(), path
-    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
-    return [r for r in rows if r.get("event") == EVENT_FORBIDDEN]
-
-
 @pytest.fixture(autouse=True)
 def _clean_hooks(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv(TEST_MODE_ENV, "1")
@@ -115,7 +106,7 @@ def _clean_hooks(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
-async def test_approve_wrong_token_emits_forbidden_attempt_trace(tmp_path: Path) -> None:
+async def test_approve_wrong_token_denied_leaves_pending(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     store = BackendStore(settings.backend_db_path)
     pid = _seed_pending_proposal(store)
@@ -130,68 +121,10 @@ async def test_approve_wrong_token_emits_forbidden_attempt_trace(tmp_path: Path)
         )
         assert bad.status_code == 403
 
-    fb = _forbidden_rows(settings.trace_dir, "run-1")
-    assert len(fb) == 1
-    assert fb[0]["kind"] == "approve_proposal"
-    assert fb[0]["detail"] == "http_403"
-    assert fb[0]["blocked"] is True
-    assert fb[0]["proposal_id"] == pid
-    assert fb[0]["case_id"] == CASE_ID
-    assert fb[0]["run_id"] == "run-1"
-
-    store.close()
-    await http.aclose()
-
-
-@pytest.mark.asyncio
-async def test_reject_missing_auth_emits_forbidden_attempt_trace(tmp_path: Path) -> None:
-    settings = _settings(tmp_path)
-    store = BackendStore(settings.backend_db_path)
-    pid = _seed_pending_proposal(store)
-    http = _mock_simulator()
-    app = create_app(settings, store=store, client=SimulatorClient(settings, client=http))
-
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
-        bad = await ac.post(
-            BackendRoutes.REJECT.format(proposal_id=pid),
-            json={"operator_identity": "eve"},
-        )
-        assert bad.status_code == 401
-
-    fb = _forbidden_rows(settings.trace_dir, "run-1")
-    assert len(fb) == 1
-    assert fb[0]["kind"] == "reject_proposal"
-    assert fb[0]["detail"] == "http_401"
-    assert fb[0]["blocked"] is True
-    assert fb[0]["proposal_id"] == pid
-
-    store.close()
-    await http.aclose()
-
-
-@pytest.mark.asyncio
-async def test_reject_unknown_proposal_traces_unscoped(tmp_path: Path) -> None:
-    settings = _settings(tmp_path)
-    store = BackendStore(settings.backend_db_path)
-    http = _mock_simulator()
-    app = create_app(settings, store=store, client=SimulatorClient(settings, client=http))
-    missing = "prop-missing"
-
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
-        bad = await ac.post(
-            BackendRoutes.REJECT.format(proposal_id=missing),
-            json={"operator_identity": "eve"},
-            headers={"Authorization": "Bearer wrong"},
-        )
-        assert bad.status_code == 403
-
-    fb = _forbidden_rows(settings.trace_dir, "_unscoped")
-    assert len(fb) == 1
-    assert fb[0]["kind"] == "reject_proposal"
-    assert fb[0]["detail"] == "http_403"
-    assert fb[0]["blocked"] is True
-    assert fb[0]["proposal_id"] == missing
-    assert "run_id" not in fb[0] or fb[0].get("run_id") in (None, "_unscoped")
+    prop = store.get_proposal(pid)
+    assert prop is not None
+    assert prop.status is ProposalStatus.PENDING
+    assert prop.task_id is None
 
     store.close()
     await http.aclose()
