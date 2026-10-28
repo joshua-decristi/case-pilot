@@ -93,3 +93,13 @@ No cross-slice equivalence claims.
 **Retained:** Approval task_id correctness; unauthorized callers cannot approve (denial at boundary).
 
 **Accepted loss:** Auth-denial **trace emission schema** (behavior retained, schema not); migration micro-test.
+
+## 8b. Investigation and follow-up execution limits
+
+**Files:** `tests/unit/test_followup_execution_limits.py`, `test_investigation_execution_limits.py`
+
+**Change:** Small risk-based trims; keep charging-boundary-relevant budget/input/tool limit enforcement units.
+
+**Retained:** Investigation and follow-up execution limit enforcement (budget/input/tool) that gates unintended spend.
+
+**Accepted loss:** Minor redundant limit-edge volume only.

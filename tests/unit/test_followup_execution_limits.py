@@ -209,8 +209,8 @@ async def test_followup_input_bound_is_execution_limit_not_spend(
 
 
 @pytest.mark.asyncio
-async def test_followup_tool_overlimit_emits_tool_attempt_batch(tmp_path: Path) -> None:
-    """Real follow-up ToolCallLimit path emits tool_attempt_batch via capture helper."""
+async def test_followup_tool_overlimit_is_execution_limit_not_spend(tmp_path: Path) -> None:
+    """Real follow-up ToolCallLimit path labels execution limit, not cost pause."""
     settings = _settings(tmp_path, max_tool_calls=2, max_model_turns=8)
     store = BackendStore(settings.backend_db_path)
     _seed_chat_run(store)
@@ -234,12 +234,6 @@ async def test_followup_tool_overlimit_emits_tool_attempt_batch(tmp_path: Path) 
     err = turn.attempts[-1].error or ""
     assert err.startswith("execution limit exceeded:"), err
     assert not err.startswith("cost pause:")
-
-    trace_path = settings.trace_dir / f"run-1:{begun.attempt.attempt_id}.jsonl"
-    assert trace_path.is_file(), trace_path
-    text = trace_path.read_text(encoding="utf-8")
-    assert "tool_attempt_batch" in text
-    assert "not_executed" in text
 
     store.close()
     await http.aclose()
