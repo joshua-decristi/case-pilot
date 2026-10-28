@@ -113,3 +113,13 @@ No cross-slice equivalence claims.
 **Retained:** Simulator behaviors required for real investigation/execution integration confidence (conflict, seed, outage-route).
 
 **Accepted loss:** Exhaustive simulator route micro-matrix beyond representative contracts.
+
+## 10a. Contracts surface
+
+**Files:** `tests/unit/test_contracts.py`
+
+**Change:** Massive schema/enum/serialization trim to secret-not-leaked contract.
+
+**Retained:** Secrets must not leak via contract/serialization surfaces.
+
+**Accepted loss:** Schema/enum/serialization/route-template-only coverage deleted without replacement.
