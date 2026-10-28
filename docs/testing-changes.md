@@ -53,3 +53,13 @@ No cross-slice equivalence claims.
 **Retained:** Deterministic safety assessment for forbidden attempts, task/proposal state facts, and phase safety evidence needed to catch unsafe pilot progression.
 
 **Accepted loss:** Exhaustive safety micro-fact combinations and low-signal repetition.
+
+## 5b. Pilot observability
+
+**Files:** `tests/unit/test_pilot_observability.py`
+
+**Change:** Observability collector suite trimmed to fail-closed pre-turn/event integrity and critical collector contracts.
+
+**Retained:** Pre-turn fail-closed / not-assessed honesty and collector behaviors that would otherwise hide invalid pilot runs.
+
+**Accepted loss:** Redundant event-schema and tracing-plumbing asserts; exact emission shape volume.

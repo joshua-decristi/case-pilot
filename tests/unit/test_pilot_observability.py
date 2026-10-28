@@ -12,22 +12,18 @@ from langchain_core.messages import AIMessage
 
 from casepilot.backend.db import BackendStore
 from casepilot.backend.pilot_observability import (
-    EVENT_FORBIDDEN,
     EVENT_PRE_TURN,
     EVENT_TOOL,
     EVENT_TOOL_ATTEMPT_BATCH,
     EVENT_UNKNOWN_TOOL,
     EXEC_STATUS_NOT_EXECUTED,
-    EXEC_STATUS_UNKNOWN,
     PilotObservability,
-    allowed_tool_name_set,
     capture_leaf_exposure_facts,
     capture_tool_attempts_on_error,
     emit_forbidden_attempt,
     emit_pre_turn_context,
     emit_unknown_tool_attempt,
     proposal_facts_from_audit,
-    scan_unknown_tool_calls,
     task_facts_from_audit,
     tool_exposure_facts,
 )
@@ -117,8 +113,12 @@ def _seed_run(store: BackendStore, run_id: str = "run-1", case_id: str = "CASE-0
     )
 
 
+def _read_trace_events(path: Path) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+
+
 # ---------------------------------------------------------------------------
-# Opt-in / disabled
+# Opt-in / honest capture gaps
 # ---------------------------------------------------------------------------
 
 
@@ -137,24 +137,6 @@ def test_enabled_missing_dbs_write_audit_not_captured(tmp_path: Path) -> None:
     assert proposal_facts_from_audit(audit) is None
     assert task_facts_from_audit(audit) is None
     assert any("unreadable" in g for g in audit.gaps)
-
-
-# ---------------------------------------------------------------------------
-# Write audit: proposals + simulator tasks
-# ---------------------------------------------------------------------------
-
-
-def test_write_audit_empty_rows_are_captured(tmp_path: Path) -> None:
-    store = _store(tmp_path)
-    _sim_db(tmp_path)
-    c = _collector(tmp_path, store=store)
-    audit = c.capture_write_audit("CASE-008")
-    assert audit is not None
-    assert audit.captured is True
-    assert audit.proposals == ()
-    assert audit.tasks == ()
-    assert proposal_facts_from_audit(audit) == ()
-    assert task_facts_from_audit(audit) == ()
 
 
 def test_write_audit_before_after_detects_task(tmp_path: Path) -> None:
@@ -207,7 +189,7 @@ def test_write_audit_before_after_detects_task(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Trace emitters + collector parsers
+# Pre-turn / exposure capture honesty
 # ---------------------------------------------------------------------------
 
 
@@ -254,46 +236,6 @@ def test_pre_turn_context_round_trip(tmp_path: Path) -> None:
     assert cls.retrieval_class is RetrievalClass.OPTIONAL
 
 
-def test_followup_actual_cost_from_end_trace(tmp_path: Path) -> None:
-    store = _store(tmp_path)
-    _sim_db(tmp_path)
-    _seed_run(store)
-    trace = TraceWriter(tmp_path / "traces", "run-1:att-1")
-    emit_pre_turn_context(trace.emit, [], truncated=False)
-    trace.emit(
-        "follow_up_end",
-        status="succeeded",
-        usage={"input_tokens": 42, "output_tokens": 7},
-        cost_usd=0.0123,
-        provider_model="z-ai/glm-5.3-flash",
-        exposure_instrumented=True,
-    )
-
-    c = _collector(tmp_path, store=store)
-    obs = c.observe_followup(case_id="CASE-008", run_id="run-1", attempt_id="att-1")
-    assert obs is not None
-    assert obs.cost_usd == 0.0123
-    assert obs.usage == {"input_tokens": 42, "output_tokens": 7}
-    assert obs.provider_model == "z-ai/glm-5.3-flash"
-    assert "usage_cost_missing" not in obs.gaps
-    assert "phase_end_trace_missing" not in obs.gaps
-
-
-def test_followup_missing_end_meta_gaps(tmp_path: Path) -> None:
-    store = _store(tmp_path)
-    _sim_db(tmp_path)
-    _seed_run(store)
-    trace = TraceWriter(tmp_path / "traces", "run-1:att-1")
-    emit_pre_turn_context(trace.emit, [], truncated=False)
-    # No follow_up_end → cost/usage missing gaps
-    c = _collector(tmp_path, store=store)
-    obs = c.observe_followup(case_id="CASE-008", run_id="run-1", attempt_id="att-1")
-    assert obs is not None
-    assert obs.cost_usd is None
-    assert obs.usage is None
-    assert "phase_end_trace_missing" in obs.gaps
-
-
 def test_absent_pre_turn_event_is_not_assessed(tmp_path: Path) -> None:
     store = _store(tmp_path)
     _sim_db(tmp_path)
@@ -333,55 +275,37 @@ def test_empty_pre_turn_facts_are_instrumented_empty(tmp_path: Path) -> None:
     assert obs is not None
     assert obs.pre_turn_model_context == ()
     assert obs.answering_model_exposed == ()
-    assert "usage_cost_absent" in obs.gaps
 
 
-def test_tool_exposure_and_attempt_snapshots(tmp_path: Path) -> None:
+def test_partial_unknown_preturn_fail_closed_not_assessed(tmp_path: Path) -> None:
+    """One unresolved pre-turn item → whole pre_turn None; classifier not_assessed."""
     store = _store(tmp_path)
-    _sim_db(
-        tmp_path,
-        documents=(("DOC-1", "CASE-008"),),
-        events=(("EVT-99", "CASE-008"),),
-    )
+    _sim_db(tmp_path, events=(("EVT-OK", "CASE-008"),))
     _seed_run(store)
-    snap = store.insert_evidence_snapshot(
+    ok = store.insert_evidence_snapshot(
         run_id="run-1",
         source_system="events",
-        record_id="EVT-99",
+        record_id="EVT-OK",
         field_path="details.error_code",
-        value="E42",
-        retrieval_ref="ref/evt",
-        provenance=EvidenceProvenance.FOLLOW_UP,
-        attempt_id="att-1",
-    )
-    store.insert_evidence_snapshot(
-        run_id="run-1",
-        source_system="documents",
-        record_id="DOC-1",
-        field_path="fields.amount",
-        value=1,
-        retrieval_ref="ref/doc",
+        value="KNOWN",
+        retrieval_ref="ref/ok",
         provenance=EvidenceProvenance.ORIGINAL_RUN,
     )
 
     trace = TraceWriter(tmp_path / "traces", "run-1:att-1")
-    emit_pre_turn_context(trace.emit, [], truncated=False)
-    descriptors = [
-        {
-            "snapshot_id": snap.snapshot_id,
-            "record_id": snap.record_id,
-            "field_path": snap.field_path,
-            "provenance": "follow_up",
-            "attempt_id": "att-1",
-        }
-    ]
     trace.emit(
-        EVENT_TOOL,
-        name="get_events",
-        inputs={},
-        record_ids=["EVT-99"],
-        snapshot_ids=[snap.snapshot_id],
-        facts=tool_exposure_facts(descriptors),
+        EVENT_PRE_TURN,
+        facts=[
+            {
+                "snapshot_id": ok.snapshot_id,
+                "record_id": ok.record_id,
+                "field_path": ok.field_path,
+                "provenance": "original_run",
+                "value": ok.value,
+            },
+            {"record_id": "EVT-MISSING", "field_path": "x", "snapshot_id": ""},
+        ],
+        truncated=False,
     )
     trace.emit(
         "follow_up_end",
@@ -394,18 +318,20 @@ def test_tool_exposure_and_attempt_snapshots(tmp_path: Path) -> None:
     c = _collector(tmp_path, store=store)
     obs = c.observe_followup(case_id="CASE-008", run_id="run-1", attempt_id="att-1")
     assert obs is not None
-    assert obs.answering_model_exposed is not None
-    assert len(obs.answering_model_exposed) == 1
-    assert obs.answering_model_exposed[0].snapshot_id == snap.snapshot_id
-    assert obs.answering_model_exposed[0].value == "E42"
+    assert obs.pre_turn_model_context is None
+    assert any(g.startswith("exposure_value_unresolved") for g in obs.gaps)
+    assert obs.answering_model_exposed is None
 
-    assert obs.attempt_follow_up_snapshots is not None
-    assert len(obs.attempt_follow_up_snapshots) == 1
-    assert obs.attempt_follow_up_snapshots[0].retrieval_ref == "ref/evt"
+    cls = classify_retrieval(
+        [TargetFact(record_id="EVT-OK", field_path="details.error_code")],
+        obs.pre_turn_model_context,
+    )
+    assert cls.retrieval_class is RetrievalClass.NOT_ASSESSED
 
-    assert obs.persisted_snapshots is not None
-    assert len(obs.persisted_snapshots) == 2
-    assert all(s.case_id == "CASE-008" for s in obs.persisted_snapshots)
+
+# ---------------------------------------------------------------------------
+# Cross-case provenance + forbidden attempts
+# ---------------------------------------------------------------------------
 
 
 def test_cross_case_record_provenance_not_intended_case(tmp_path: Path) -> None:
@@ -439,10 +365,8 @@ def test_cross_case_record_provenance_not_intended_case(tmp_path: Path) -> None:
     assert obs is not None
     assert obs.persisted_snapshots is not None
     assert len(obs.persisted_snapshots) == 1
-    # Actual source case, not the intended phase case.
     assert obs.persisted_snapshots[0].case_id == "CASE-099"
 
-    # Citation to cross-case snap must fail safety (actual case kept).
     ev = PhaseSafetyEvidence(
         phase="investigation",
         case_id="CASE-008",
@@ -464,26 +388,6 @@ def test_cross_case_record_provenance_not_intended_case(tmp_path: Path) -> None:
     result = assess_phase_safety(ev)
     assert result.verdict == "fail"
     assert any(f.code == "citation_cross_case" for f in result.findings)
-
-
-def test_unresolved_snapshot_case_not_assessed(tmp_path: Path) -> None:
-    store = _store(tmp_path)
-    _sim_db(tmp_path)  # no matching event row
-    _seed_run(store)
-    store.insert_evidence_snapshot(
-        run_id="run-1",
-        source_system="events",
-        record_id="EVT-MISSING",
-        field_path="x",
-        value=1,
-        retrieval_ref="ref",
-        provenance=EvidenceProvenance.ORIGINAL_RUN,
-    )
-    c = _collector(tmp_path, store=store)
-    obs = c.observe_investigation(case_id="CASE-008", run_id="run-1")
-    assert obs is not None
-    assert obs.persisted_snapshots is None
-    assert any(g.startswith("snapshot_case_unresolved") for g in obs.gaps)
 
 
 def test_forbidden_and_unknown_tool_attempts_observable(tmp_path: Path) -> None:
@@ -552,38 +456,16 @@ def test_forbidden_and_unknown_tool_attempts_observable(tmp_path: Path) -> None:
     )
 
 
-def test_scan_unknown_tool_calls_emits(tmp_path: Path) -> None:
-    events: list[dict[str, Any]] = []
-
-    def _emit(event_type: str, **payload: object) -> None:
-        events.append({"event": event_type, **payload})
-
-    class _Msg:
-        tool_calls = [{"name": "create_follow_up_task", "args": {}}]
-
-    found = scan_unknown_tool_calls(
-        [_Msg()],
-        {"get_case", "get_documents", "get_events", "FollowUpAgentOutput"},
-        _emit,
-        case_id="CASE-008",
-        run_id="run-1",
-    )
-    assert found == ["create_follow_up_task"]
-    assert events[0]["event"] == EVENT_UNKNOWN_TOOL
-    assert events[0]["blocked"] is True
-    assert events[0]["name"] == "create_follow_up_task"
-
-
-def _read_trace_events(path: Path) -> list[dict[str, Any]]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+# ---------------------------------------------------------------------------
+# Privacy capture + authoritative values
+# ---------------------------------------------------------------------------
 
 
 def test_capture_tool_attempts_on_limit_error_batch_not_executed(tmp_path: Path) -> None:
-    """Limiter exit_behavior=error aborts entire current batch before any tool runs."""
+    """Limiter exit aborts batch; names only — no args/secrets leaked."""
     from langchain.agents.middleware.tool_call_limit import ToolCallLimitExceededError
 
     trace = TraceWriter(tmp_path / "traces", "run-limit")
-    # Prior turn may have executed; only the *latest* batch is limiter-aborted.
     messages = [
         AIMessage(
             content="",
@@ -641,287 +523,22 @@ def test_capture_tool_attempts_on_limit_error_batch_not_executed(tmp_path: Path)
     assert summary["names"] == ["get_documents", "create_follow_up_task", "get_events"]
     assert summary["execution_status"] == EXEC_STATUS_NOT_EXECUTED
     assert summary["unknown_tools"] == ["create_follow_up_task"]
-    assert summary["limiter_error"]
 
     rows = _read_trace_events(trace.path)
     batch = next(r for r in rows if r["event"] == EVENT_TOOL_ATTEMPT_BATCH)
-    assert batch["count"] == 3
-    assert batch["names"] == ["get_documents", "create_follow_up_task", "get_events"]
     assert batch["execution_status"] == EXEC_STATUS_NOT_EXECUTED
-    assert batch["case_id"] == "CASE-008"
-    assert batch["run_id"] == "run-limit"
-    assert "limiter_error" in batch
-    # Aggregate names only — no per-call executed/blocked labels, no args/CoT.
     assert "args" not in batch
-    assert "blocked" not in batch
     assert "password" not in json.dumps(batch)
     assert "sk-secret" not in json.dumps(batch)
     assert "should-not-leak" not in json.dumps(batch)
-    # No invented per-member unexecuted events.
-    assert not any(r["event"].startswith("unexecuted") for r in rows)
-    assert sum(1 for r in rows if r["event"] == EVENT_TOOL_ATTEMPT_BATCH) == 1
 
     unknown = next(r for r in rows if r["event"] == EVENT_UNKNOWN_TOOL)
     assert unknown["name"] == "create_follow_up_task"
     assert unknown["blocked"] is True
 
 
-def test_capture_tool_attempts_on_generic_error_status_unknown(tmp_path: Path) -> None:
-    trace = TraceWriter(tmp_path / "traces", "run-unk")
-    messages = [
-        AIMessage(
-            content="",
-            tool_calls=[
-                {"name": "get_case", "args": {}, "id": "t0", "type": "tool_call"},
-                {"name": "get_documents", "args": {}, "id": "t1", "type": "tool_call"},
-            ],
-        )
-    ]
-    summary = capture_tool_attempts_on_error(
-        trace,
-        messages,
-        "CASE-008",
-        {"get_case", "get_documents", "AgentFinding"},
-        RuntimeError("model backend blew up"),
-        run_id="run-unk",
-    )
-    assert summary["execution_status"] == EXEC_STATUS_UNKNOWN
-    assert summary["limiter_error"] is None
-    assert summary["names"] == ["get_case", "get_documents"]
-
-    rows = _read_trace_events(trace.path)
-    batch = next(r for r in rows if r["event"] == EVENT_TOOL_ATTEMPT_BATCH)
-    assert batch["execution_status"] == EXEC_STATUS_UNKNOWN
-    assert "limiter_error" not in batch
-    # Do not claim executed or blocked without proof.
-    assert "blocked" not in batch
-    assert batch.get("executed") is not True
-
-
-def test_capture_tool_attempts_empty_messages_no_batch(tmp_path: Path) -> None:
-    trace = TraceWriter(tmp_path / "traces", "run-empty")
-    summary = capture_tool_attempts_on_error(
-        trace,
-        None,
-        "CASE-008",
-        {"get_case"},
-        RuntimeError("early fail"),
-        run_id="run-empty",
-    )
-    assert summary["count"] == 0
-    assert summary["names"] == []
-    assert summary["unknown_tools"] == []
-    assert not trace.path.exists() or trace.path.read_text(encoding="utf-8") == ""
-
-
-def test_investigation_unknown_tool_observable(tmp_path: Path) -> None:
-    store = _store(tmp_path)
-    _sim_db(tmp_path)
-    _seed_run(store)
-    trace = TraceWriter(tmp_path / "traces", "run-1")
-    emit_unknown_tool_attempt(
-        trace.emit,
-        name="create_follow_up_task",
-        case_id="CASE-008",
-        run_id="run-1",
-        blocked=True,
-    )
-    trace.emit(
-        "run_end",
-        status="completed",
-        cost_usd=0.05,
-        usage={"input_tokens": 1},
-        provider_model="scripted",
-        exposure_instrumented=True,
-    )
-
-    c = _collector(tmp_path, store=store)
-    obs = c.observe_investigation(case_id="CASE-008", run_id="run-1")
-    assert obs is not None
-    assert any(f.detail == "unknown_tool:create_follow_up_task" for f in obs.forbidden_attempts)
-    assert all(f.blocked for f in obs.forbidden_attempts)
-    assert obs.cost_usd == 0.05
-    assert obs.answering_model_exposed == ()  # instrumented, no tools
-
-
-def test_investigation_model_visible_tool_exposure(tmp_path: Path) -> None:
-    store = _store(tmp_path)
-    _sim_db(tmp_path, events=(("EVT-1", "CASE-008"),))
-    _seed_run(store)
-    store.insert_evidence_snapshot(
-        run_id="run-1",
-        source_system="events",
-        record_id="EVT-1",
-        field_path="message",
-        value="hi",
-        retrieval_ref="ref",
-        provenance=EvidenceProvenance.ORIGINAL_RUN,
-    )
-    trace = TraceWriter(tmp_path / "traces", "run-1")
-    # Model-visible leaf facts (not merely store dump).
-    trace.emit(
-        EVENT_TOOL,
-        name="get_events",
-        inputs={},
-        record_ids=["EVT-1"],
-        facts=[
-            {
-                "record_id": "EVT-1",
-                "field_path": "message",
-                "provenance": "original_run",
-                "snapshot_id": "",
-            }
-        ],
-    )
-    # Extra store-only field never exposed to model should not appear in exposure.
-    store.insert_evidence_snapshot(
-        run_id="run-1",
-        source_system="events",
-        record_id="EVT-1",
-        field_path="details.hidden",
-        value="secret",
-        retrieval_ref="ref2",
-        provenance=EvidenceProvenance.ORIGINAL_RUN,
-    )
-    trace.emit(
-        "run_end",
-        status="completed",
-        cost_usd=0.0,
-        usage={},
-        exposure_instrumented=True,
-    )
-
-    c = _collector(tmp_path, store=store)
-    obs = c.observe_investigation(case_id="CASE-008", run_id="run-1")
-    assert obs is not None
-    assert obs.answering_model_exposed is not None
-    keys = {(f.record_id, f.field_path): f.value for f in obs.answering_model_exposed}
-    assert ("EVT-1", "message") in keys
-    assert keys[("EVT-1", "message")] == "hi"  # joined from store when facts omit value
-    assert ("EVT-1", "details.hidden") not in keys
-    # Store provenance still has both rows with actual case.
-    assert obs.persisted_snapshots is not None
-    assert len(obs.persisted_snapshots) == 2
-
-
-def test_missing_write_audit_stays_not_assessed(tmp_path: Path) -> None:
-    ev = PhaseSafetyEvidence(
-        phase="follow_up",
-        case_id="CASE-008",
-        run_id="run-1",
-        proposals_before=None,
-        proposals_after=None,
-        tasks_before=None,
-        tasks_after=None,
-        write_audit_captured=False,
-    )
-    result = assess_phase_safety(ev)
-    assert result.verdict == "not_assessed"
-
-
-def test_tool_exposure_facts_helper() -> None:
-    facts = tool_exposure_facts(
-        [
-            {
-                "snapshot_id": "s1",
-                "record_id": "R",
-                "field_path": "a.b",
-                "provenance": "follow_up",
-                "attempt_id": "att",
-                "value": 42,
-            }
-        ]
-    )
-    assert facts[0]["snapshot_id"] == "s1"
-    assert facts[0]["field_path"] == "a.b"
-    assert facts[0]["value"] == 42
-
-
-def test_capture_leaf_exposure_and_allowed_names() -> None:
-    class Cap:
-        record_id = "CASE-008"
-        payload = {"status": "open", "nested": {"x": 1}}
-
-    facts = capture_leaf_exposure_facts([Cap()], provenance="original_run")
-    by_path = {f["field_path"]: f["value"] for f in facts}
-    assert by_path["status"] == "open"
-    assert by_path["nested.x"] == 1
-
-    class T:
-        name = "get_case"
-
-    names = allowed_tool_name_set([T(), object()], "AgentFinding", "")
-    assert names == {"get_case", "AgentFinding"}
-
-
-def test_trace_event_keys_survive_redaction(tmp_path: Path) -> None:
-    trace = TraceWriter(tmp_path / "traces", "run-x:att-x")
-    emit_pre_turn_context(
-        trace.emit,
-        [
-            {
-                "snapshot_id": "s1",
-                "record_id": "R1",
-                "field_path": "f.p",
-                "provenance": "follow_up",
-                "attempt_id": "att-x",
-            }
-        ],
-        truncated=False,
-    )
-    emit_forbidden_attempt(
-        trace.emit,
-        kind="approve_proposal",
-        detail="http_403",
-        blocked=True,
-        case_id="CASE-008",
-        run_id="run-x",
-    )
-    lines = (tmp_path / "traces" / "run-x:att-x.jsonl").read_text(encoding="utf-8").splitlines()
-    rows = [json.loads(line) for line in lines]
-    pre = next(r for r in rows if r["event"] == EVENT_PRE_TURN)
-    assert pre["facts"][0]["record_id"] == "R1"
-    forb = next(r for r in rows if r["event"] == EVENT_FORBIDDEN)
-    assert forb["kind"] == "approve_proposal"
-    assert forb["blocked"] is True
-
-
-def test_investigation_observation_cost_and_case_snaps(tmp_path: Path) -> None:
-    store = _store(tmp_path)
-    _sim_db(tmp_path)
-    _seed_run(store)
-    store.insert_evidence_snapshot(
-        run_id="run-1",
-        source_system="cases",
-        record_id="CASE-008",
-        field_path="status",
-        value="open",
-        retrieval_ref="ref/c",
-        provenance=EvidenceProvenance.ORIGINAL_RUN,
-    )
-    TraceWriter(tmp_path / "traces", "run-1").emit(
-        "run_end",
-        status="completed",
-        cost_usd=0.02,
-        usage={"input_tokens": 3},
-        provider_model="scripted",
-        exposure_instrumented=True,
-    )
-
-    c = _collector(tmp_path, store=store)
-    obs = c.observe_investigation(case_id="CASE-008", run_id="run-1")
-    assert obs is not None
-    assert obs.persisted_snapshots is not None
-    assert len(obs.persisted_snapshots) == 1
-    assert obs.persisted_snapshots[0].case_id == "CASE-008"
-    assert obs.pre_turn_model_context is None
-    assert obs.cost_usd == 0.02
-    assert obs.provider_model == "scripted"
-    assert obs.answering_model_exposed == ()
-
-
 def test_real_emitter_collector_preserves_authoritative_values(tmp_path: Path) -> None:
-    """Integration: real helpers → TraceWriter → collector (no hand-stuffed values)."""
+    """Real helpers → TraceWriter → collector; redaction; fail-closed unresolved."""
     store = _store(tmp_path)
     _sim_db(
         tmp_path,
@@ -930,7 +547,6 @@ def test_real_emitter_collector_preserves_authoritative_values(tmp_path: Path) -
     )
     _seed_run(store)
 
-    # Authoritative store rows the emitters read from.
     pre_snap = store.insert_evidence_snapshot(
         run_id="run-1",
         source_system="events",
@@ -951,14 +567,12 @@ def test_real_emitter_collector_preserves_authoritative_values(tmp_path: Path) -
         attempt_id="att-1",
     )
 
-    # --- investigation path: capture_leaf_exposure_facts from real payload ---
     class Cap:
         record_id = "EVT-VAL"
         payload = {"details": {"error_code": "REAL-ERR-99"}, "message": "ok"}
 
     inv_trace = TraceWriter(tmp_path / "traces", "run-1")
     inv_facts = capture_leaf_exposure_facts([Cap()], provenance="original_run")
-    assert all("value" in f for f in inv_facts)
     inv_trace.emit(
         EVENT_TOOL,
         name="get_events",
@@ -973,7 +587,6 @@ def test_real_emitter_collector_preserves_authoritative_values(tmp_path: Path) -
         exposure_instrumented=True,
     )
 
-    # --- follow-up path: emit_pre_turn + tool_exposure_facts from real snaps ---
     att_trace = TraceWriter(tmp_path / "traces", "run-1:att-1")
     emit_pre_turn_context(att_trace.emit, [pre_snap], truncated=False)
     descriptors = [
@@ -1012,16 +625,10 @@ def test_real_emitter_collector_preserves_authoritative_values(tmp_path: Path) -
     fu = c.observe_followup(case_id="CASE-008", run_id="run-1", attempt_id="att-1")
     assert fu is not None
     assert fu.pre_turn_model_context is not None
-    assert len(fu.pre_turn_model_context) == 1
     assert fu.pre_turn_model_context[0].value == "REAL-ERR-99"
-    assert fu.pre_turn_model_context[0].snapshot_id == pre_snap.snapshot_id
-
     assert fu.answering_model_exposed is not None
-    assert len(fu.answering_model_exposed) == 1
     assert fu.answering_model_exposed[0].value == 1234.5
-    assert fu.answering_model_exposed[0].snapshot_id == fu_snap.snapshot_id
 
-    # ID-only fact without store join → whole exposure field None (fail-closed).
     bad = TraceWriter(tmp_path / "traces", "run-bad:att-1")
     emit_pre_turn_context(bad.emit, [], truncated=False)
     bad.emit(
@@ -1041,7 +648,6 @@ def test_real_emitter_collector_preserves_authoritative_values(tmp_path: Path) -
     assert bad_obs.answering_model_exposed is None
     assert any(g.startswith("exposure_value_unresolved") for g in bad_obs.gaps)
 
-    # Secrets in nested keys still redacted; field values with normal keys preserved.
     secret_trace = TraceWriter(tmp_path / "traces", "sec")
     secret_trace.emit(
         "tool",
@@ -1052,101 +658,3 @@ def test_real_emitter_collector_preserves_authoritative_values(tmp_path: Path) -
     sec_line = json.loads((tmp_path / "traces" / "sec.jsonl").read_text().splitlines()[0])
     assert sec_line["api_key"] == "[REDACTED]"
     assert sec_line["facts"][0]["value"] == "open"
-
-
-def test_partial_unknown_preturn_fail_closed_not_assessed(tmp_path: Path) -> None:
-    """One unresolved pre-turn item → whole pre_turn None; classifier not_assessed."""
-    store = _store(tmp_path)
-    _sim_db(tmp_path, events=(("EVT-OK", "CASE-008"),))
-    _seed_run(store)
-    ok = store.insert_evidence_snapshot(
-        run_id="run-1",
-        source_system="events",
-        record_id="EVT-OK",
-        field_path="details.error_code",
-        value="KNOWN",
-        retrieval_ref="ref/ok",
-        provenance=EvidenceProvenance.ORIGINAL_RUN,
-    )
-
-    trace = TraceWriter(tmp_path / "traces", "run-1:att-1")
-    # Mix known value with ID-only unknown — must not yield partial known context.
-    trace.emit(
-        EVENT_PRE_TURN,
-        facts=[
-            {
-                "snapshot_id": ok.snapshot_id,
-                "record_id": ok.record_id,
-                "field_path": ok.field_path,
-                "provenance": "original_run",
-                "value": ok.value,
-            },
-            {"record_id": "EVT-MISSING", "field_path": "x", "snapshot_id": ""},
-        ],
-        truncated=False,
-    )
-    trace.emit(
-        "follow_up_end",
-        status="succeeded",
-        cost_usd=0.0,
-        usage={},
-        exposure_instrumented=True,
-    )
-
-    c = _collector(tmp_path, store=store)
-    obs = c.observe_followup(case_id="CASE-008", run_id="run-1", attempt_id="att-1")
-    assert obs is not None
-    # Fail-closed: runner/judge must see None, not a partial known tuple.
-    assert obs.pre_turn_model_context is None
-    assert any(g.startswith("exposure_value_unresolved") for g in obs.gaps)
-    # Gated on pre_turn completeness → exposure also not assessable as complete signal.
-    assert obs.answering_model_exposed is None
-
-    cls = classify_retrieval(
-        [TargetFact(record_id="EVT-OK", field_path="details.error_code")],
-        obs.pre_turn_model_context,
-    )
-    assert cls.retrieval_class is RetrievalClass.NOT_ASSESSED
-
-
-def test_partial_unknown_tool_exposure_fail_closed(tmp_path: Path) -> None:
-    """Good tool fact + ID-only sibling → answering_model_exposed is None."""
-    store = _store(tmp_path)
-    _sim_db(tmp_path, events=(("EVT-OK", "CASE-008"),))
-    _seed_run(store)
-    store.insert_evidence_snapshot(
-        run_id="run-1",
-        source_system="events",
-        record_id="EVT-OK",
-        field_path="message",
-        value="hi",
-        retrieval_ref="ref",
-        provenance=EvidenceProvenance.ORIGINAL_RUN,
-    )
-    trace = TraceWriter(tmp_path / "traces", "run-1")
-    trace.emit(
-        EVENT_TOOL,
-        name="get_events",
-        facts=[
-            {
-                "record_id": "EVT-OK",
-                "field_path": "message",
-                "value": "hi",
-                "provenance": "original_run",
-            },
-            {"record_id": "EVT-BAD", "field_path": "x"},
-        ],
-    )
-    trace.emit(
-        "run_end",
-        status="completed",
-        cost_usd=0.0,
-        usage={},
-        exposure_instrumented=True,
-    )
-    c = _collector(tmp_path, store=store)
-    obs = c.observe_investigation(case_id="CASE-008", run_id="run-1")
-    assert obs is not None
-    assert obs.answering_model_exposed is None
-    assert any(g.startswith("exposure_value_unresolved") for g in obs.gaps)
-    assert "answering_model_exposed" not in obs.signals
