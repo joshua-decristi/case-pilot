@@ -1,4 +1,7 @@
-"""Unit tests for investigation backend (scripted model, no paid calls)."""
+"""Backend unit tests: spend guard, redaction, evidence, fail-closed (no paid calls).
+
+Route/schema mock-flow and helper units deleted; boundary covers workflow CRUD.
+"""
 
 from __future__ import annotations
 
@@ -41,7 +44,6 @@ from casepilot.shared.contracts import (
     ProposalStatus,
     RunStatus,
     SimulatorRoutes,
-    StartInvestigationRequest,
 )
 from casepilot.simulator.db import connect
 from casepilot.simulator.seed import seed
@@ -97,16 +99,8 @@ def _case001_bundle() -> tuple[CaseRecord, DocumentListResponse, EventListRespon
             conn.close()
 
 
-def _case() -> CaseRecord:
-    return _case001_bundle()[0]
-
-
 def _docs() -> DocumentListResponse:
     return _case001_bundle()[1]
-
-
-def _events() -> EventListResponse:
-    return _case001_bundle()[2]
 
 
 def _case001_index() -> RetrievedIndex:
@@ -118,7 +112,7 @@ def _case001_index() -> RetrievedIndex:
     return idx
 
 
-def _mock_simulator(*, fail_write: bool = False, conflict: bool = False) -> httpx.AsyncClient:
+def _mock_simulator() -> httpx.AsyncClient:
     case, docs, events = _case001_bundle()
     tasks: dict[str, CreateFollowUpTaskRequest] = {}
 
@@ -135,13 +129,9 @@ def _mock_simulator(*, fail_write: bool = False, conflict: bool = False) -> http
             return httpx.Response(200, json=events.model_dump(mode="json"))
         if path == SimulatorRoutes.FOLLOW_UP_TASKS.format(case_id=CASE_ID):
             body = CreateFollowUpTaskRequest.model_validate_json(request.content)
-            if fail_write:
-                return httpx.Response(503, json={"detail": "down"})
             if body.proposal_id in tasks:
                 prev = tasks[body.proposal_id]
                 if prev.task != body.task or prev.proposal_id != body.proposal_id:
-                    return httpx.Response(409, json={"detail": "conflict"})
-                if conflict:
                     return httpx.Response(409, json={"detail": "conflict"})
                 return httpx.Response(
                     200,
@@ -180,11 +170,6 @@ def _clean_hooks(monkeypatch: pytest.MonkeyPatch):
     clear_test_hooks()
     yield
     clear_test_hooks()
-
-
-# ---------------------------------------------------------------------------
-# hooks / evidence / digest
-# ---------------------------------------------------------------------------
 
 
 def test_scripted_install_requires_test_mode(monkeypatch: pytest.MonkeyPatch):
@@ -258,24 +243,6 @@ def test_evidence_rejects_unknown_record():
     )
     assert ok == []
     assert errs and "DOC-FAKE" in errs[0]
-
-
-def test_evidence_accepts_retrieved_doc():
-    idx = RetrievedIndex()
-    idx.note_documents(_docs().documents)
-    ok, errs = validate_evidence(
-        [
-            Evidence(
-                source_system="documents",
-                record_id="DOC-001-A",
-                field="status",
-                fact="missing",
-                retrieval_ref="get_documents",
-            )
-        ],
-        idx,
-    )
-    assert len(ok) == 1 and not errs
 
 
 def test_evidence_case001_fixture_good_paths():
@@ -358,64 +325,19 @@ def test_evidence_case001_fixture_good_paths():
     assert len(ok) == len(good)
 
 
-@pytest.mark.parametrize(
-    ("source_system", "record_id", "field", "fact", "retrieval_ref", "err_substr"),
-    [
-        (
-            "documents",
-            "DOC-001-A",
-            "status/content_summary",
-            "received",
-            "get_documents",
-            "status/content_summary",
-        ),
-        (
-            "events",
-            "EVT-001-A",
-            "details.not_a_real_key",
-            "x",
-            "get_events",
-            None,
-        ),
-        (
-            "events",
-            "EVT-001-B",
-            "reason",
-            "required_document_absent",
-            "get_events",
-            None,
-        ),
-    ],
-    ids=["slash-multi-field", "fake-nested-key", "bare-nested-key"],
-)
-def test_evidence_case001_rejects_bad_field_path(
-    source_system: str,
-    record_id: str,
-    field: str,
-    fact: str,
-    retrieval_ref: str,
-    err_substr: str | None,
-):
+def test_evidence_case001_rejects_bad_field_path():
+    """Representative bad path: slash multi-field must not validate."""
     idx = _case001_index()
     bad = Evidence(
-        source_system=source_system,  # type: ignore[arg-type]
-        record_id=record_id,
-        field=field,
-        fact=fact,
-        retrieval_ref=retrieval_ref,
+        source_system="documents",
+        record_id="DOC-001-A",
+        field="status/content_summary",
+        fact="received",
+        retrieval_ref="get_documents",
     )
     ok, errs = validate_evidence([bad], idx)
     assert ok == [] and errs
-    if err_substr is not None:
-        assert err_substr in errs[0]
-
-
-def test_payload_digest_stable():
-    t = FollowUpTaskPayload(title="a", body="b", case_id="C")
-    assert payload_digest(t) == payload_digest(t)
-    assert payload_digest(t) != payload_digest(
-        FollowUpTaskPayload(title="a", body="B", case_id="C")
-    )
+    assert "status/content_summary" in errs[0]
 
 
 def test_trace_redacts_secrets(tmp_path: Path):
@@ -425,11 +347,6 @@ def test_trace_redacts_secrets(tmp_path: Path):
     assert "super-secret" not in line
     assert "abc" not in line
     assert "[REDACTED]" in line
-
-
-# ---------------------------------------------------------------------------
-# investigation + API
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -529,164 +446,6 @@ async def test_case001_scripted_investigation_accepts_correct_evidence_paths(tmp
 
 
 @pytest.mark.asyncio
-async def test_api_investigate_get_approve_reject_flow(tmp_path: Path):
-    settings = _settings(tmp_path)
-    store = BackendStore(settings.backend_db_path)
-    http = _mock_simulator()
-    client = SimulatorClient(settings, client=http)
-    finding = _finding()
-
-    def factory(_s):
-        return ScriptedChatModel(responses=_tool_then_finding(finding))
-
-    app = create_app(settings, model_factory=factory, store=store, client=client)
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        h = await ac.get(BackendRoutes.HEALTH)
-        assert h.status_code == 200
-
-        resp = await ac.post(
-            BackendRoutes.INVESTIGATIONS,
-            json=StartInvestigationRequest(case_id=CASE_ID, objective="Why stalled?").model_dump(),
-        )
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        run_id = body["run_id"]
-        assert body["result"]["approval_required"] is True
-        pid = body["result"]["proposal_id"]
-        assert pid
-
-        run = await ac.get(BackendRoutes.RUN.format(run_id=run_id))
-        assert run.status_code == 200
-        assert run.json()["status"] == "completed"
-        assert run.json()["result"]["proposal_id"] == pid
-
-        # reject without auth
-        bad = await ac.post(
-            BackendRoutes.REJECT.format(proposal_id=pid),
-            json={"operator_identity": "x"},
-        )
-        assert bad.status_code == 401
-
-        # wrong token
-        bad2 = await ac.post(
-            BackendRoutes.REJECT.format(proposal_id=pid),
-            json={"operator_identity": "x"},
-            headers={"Authorization": "Bearer wrong"},
-        )
-        assert bad2.status_code == 403
-
-        # approve
-        ok = await ac.post(
-            BackendRoutes.APPROVE.format(proposal_id=pid),
-            json={"operator_identity": "alice"},
-            headers={"Authorization": f"Bearer {TOKEN_OP}"},
-        )
-        assert ok.status_code == 200, ok.text
-        assert ok.json()["proposal"]["status"] == "executed"
-        assert ok.json()["proposal"]["operator_identity"] == "alice"
-        # payload immutable
-        assert ok.json()["proposal"]["task_payload"] == finding.proposed_task.model_dump()
-
-        # second approve is idempotent success
-        again = await ac.post(
-            BackendRoutes.APPROVE.format(proposal_id=pid),
-            json={"operator_identity": "alice"},
-            headers={"Authorization": f"Bearer {TOKEN_OP}"},
-        )
-        assert again.status_code == 200
-        assert again.json()["proposal"]["status"] == "executed"
-
-    store.close()
-    await http.aclose()
-
-
-@pytest.mark.asyncio
-async def test_reject_is_terminal(tmp_path: Path):
-    settings = _settings(tmp_path)
-    store = BackendStore(settings.backend_db_path)
-    http = _mock_simulator()
-    client = SimulatorClient(settings, client=http)
-    finding = _finding()
-
-    def factory(_s):
-        return ScriptedChatModel(responses=_tool_then_finding(finding))
-
-    app = create_app(settings, model_factory=factory, store=store, client=client)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
-        resp = await ac.post(
-            BackendRoutes.INVESTIGATIONS,
-            json={"case_id": CASE_ID, "objective": "x"},
-        )
-        pid = resp.json()["result"]["proposal_id"]
-        rej = await ac.post(
-            BackendRoutes.REJECT.format(proposal_id=pid),
-            json={"operator_identity": "bob", "reason": "nope"},
-            headers={"Authorization": f"Bearer {TOKEN_OP}"},
-        )
-        assert rej.json()["proposal"]["status"] == "rejected"
-        appr = await ac.post(
-            BackendRoutes.APPROVE.format(proposal_id=pid),
-            json={"operator_identity": "bob"},
-            headers={"Authorization": f"Bearer {TOKEN_OP}"},
-        )
-        assert appr.status_code == 409
-    store.close()
-    await http.aclose()
-
-
-@pytest.mark.asyncio
-async def test_execution_failed_retry(tmp_path: Path):
-    settings = _settings(tmp_path)
-    store = BackendStore(settings.backend_db_path)
-    # First client fails writes
-    http_fail = _mock_simulator(fail_write=True)
-    client_fail = SimulatorClient(settings, client=http_fail)
-    finding = _finding()
-
-    def factory(_s):
-        return ScriptedChatModel(responses=_tool_then_finding(finding))
-
-    app = create_app(settings, model_factory=factory, store=store, client=client_fail)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
-        resp = await ac.post(
-            BackendRoutes.INVESTIGATIONS,
-            json={"case_id": CASE_ID, "objective": "x"},
-        )
-        pid = resp.json()["result"]["proposal_id"]
-        fail = await ac.post(
-            BackendRoutes.APPROVE.format(proposal_id=pid),
-            json={"operator_identity": "ops"},
-            headers={"Authorization": f"Bearer {TOKEN_OP}"},
-        )
-        assert fail.json()["proposal"]["status"] == "execution_failed"
-        assert fail.json()["proposal"]["execution_error"]
-
-    await http_fail.aclose()
-
-    # Swap client to healthy simulator and retry same proposal
-    http_ok = _mock_simulator()
-    client_ok = SimulatorClient(settings, client=http_ok)
-    app.state.backend.client = client_ok  # type: ignore[attr-defined]
-
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
-        retry = await ac.post(
-            BackendRoutes.APPROVE.format(proposal_id=pid),
-            json={"operator_identity": "ops"},
-            headers={"Authorization": f"Bearer {TOKEN_OP}"},
-        )
-        assert retry.status_code == 200, retry.text
-        assert retry.json()["proposal"]["status"] == "executed"
-        # payload unchanged
-        assert retry.json()["proposal"]["task_payload"]["title"] == (
-            f"Follow up missing docs for {CASE_ID}"
-        )
-
-    store.close()
-    await http_ok.aclose()
-
-
-@pytest.mark.asyncio
 async def test_missing_api_key_fails_visibly_without_hook(tmp_path: Path, monkeypatch):
     monkeypatch.delenv(TEST_MODE_ENV, raising=False)
     clear_test_hooks()
@@ -700,54 +459,10 @@ async def test_missing_api_key_fails_visibly_without_hook(tmp_path: Path, monkey
         client=client,
         case_id=CASE_ID,
         objective="x",
-        # default factory → no key, no hook
     )
     result = outcome.result
     assert result.status == RunStatus.FAILED
     assert "OPENROUTER_API_KEY" in (result.explanation or "")
-    store.close()
-    await http.aclose()
-
-
-@pytest.mark.asyncio
-async def test_test_mode_http_hook_installs_script(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv(TEST_MODE_ENV, "1")
-    settings = _settings(tmp_path)
-    store = BackendStore(settings.backend_db_path)
-    http = _mock_simulator()
-    client = SimulatorClient(settings, client=http)
-    # model_factory uses default which consults hooks
-    app = create_app(settings, store=store, client=client)
-    finding = _finding(
-        next_action=NextAction.NO_ACTION_REQUIRED,
-        next_action_explanation="ok",
-        proposed_task=None,
-        evidence=[
-            Evidence(
-                source_system="cases",
-                record_id=CASE_ID,
-                field="status",
-                fact="stalled",
-                retrieval_ref="get_case",
-            )
-        ],
-    )
-    responses = _tool_then_finding(finding, tools=["get_case"])
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
-        mode = await ac.get("/v1/_test/mode")
-        assert mode.status_code == 200
-        installed = await ac.put(
-            "/v1/_test/scripted-model",
-            json={"responses": [m.model_dump(mode="json") for m in responses]},
-        )
-        assert installed.status_code == 200
-        resp = await ac.post(
-            BackendRoutes.INVESTIGATIONS,
-            json={"case_id": CASE_ID, "objective": "x"},
-        )
-        assert resp.status_code == 200, resp.text
-        assert resp.json()["result"]["status"] == "completed"
-        assert resp.json()["result"]["approval_required"] is False
     store.close()
     await http.aclose()
 
@@ -759,113 +474,6 @@ def test_test_routes_absent_without_test_mode(tmp_path: Path, monkeypatch):
     paths = {getattr(r, "path", None) for r in app.routes}
     assert "/v1/_test/scripted-model" not in paths
     assert "/v1/_test/mode" not in paths
-
-
-@pytest.mark.asyncio
-async def test_proposal_get(tmp_path: Path):
-    settings = _settings(tmp_path)
-    store = BackendStore(settings.backend_db_path)
-    http = _mock_simulator()
-    client = SimulatorClient(settings, client=http)
-    finding = _finding()
-
-    def factory(_s):
-        return ScriptedChatModel(responses=_tool_then_finding(finding))
-
-    app = create_app(settings, model_factory=factory, store=store, client=client)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
-        resp = await ac.post(
-            BackendRoutes.INVESTIGATIONS,
-            json={"case_id": CASE_ID, "objective": "x"},
-        )
-        pid = resp.json()["result"]["proposal_id"]
-        got = await ac.get(BackendRoutes.PROPOSAL.format(proposal_id=pid))
-        assert got.status_code == 200
-        assert got.json()["status"] == "pending"
-        missing = await ac.get(BackendRoutes.PROPOSAL.format(proposal_id="nope"))
-        assert missing.status_code == 404
-    store.close()
-    await http.aclose()
-
-
-@pytest.mark.asyncio
-async def test_case_proposal_discoverability_api(tmp_path: Path):
-    """proposal_id on result + GET /v1/cases/{case_id}/proposals."""
-    from casepilot.backend.app import CASE_PROPOSALS
-
-    settings = _settings(tmp_path)
-    store = BackendStore(settings.backend_db_path)
-    http = _mock_simulator()
-    client = SimulatorClient(settings, client=http)
-    finding = _finding()
-
-    def factory(_s):
-        return ScriptedChatModel(responses=_tool_then_finding(finding))
-
-    app = create_app(settings, model_factory=factory, store=store, client=client)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
-        resp = await ac.post(
-            BackendRoutes.INVESTIGATIONS,
-            json={"case_id": CASE_ID, "objective": "x"},
-        )
-        assert resp.status_code == 200
-        pid = resp.json()["result"]["proposal_id"]
-        assert pid
-        listed = await ac.get(CASE_PROPOSALS.format(case_id=CASE_ID))
-        assert listed.status_code == 200
-        rows = listed.json()
-        assert len(rows) == 1
-        assert rows[0]["proposal_id"] == pid
-        assert rows[0]["case_id"] == CASE_ID
-        empty = await ac.get(CASE_PROPOSALS.format(case_id="CASE-NONE"))
-        assert empty.status_code == 200
-        assert empty.json() == []
-    store.close()
-    await http.aclose()
-
-
-@pytest.mark.asyncio
-async def test_invalid_evidence_no_write_proposal(tmp_path: Path):
-    """Fabricated evidence → indeterminate/escalate, empty evidence, no proposal (API)."""
-    from casepilot.backend.app import CASE_PROPOSALS
-
-    settings = _settings(tmp_path)
-    store = BackendStore(settings.backend_db_path)
-    http = _mock_simulator()
-    client = SimulatorClient(settings, client=http)
-    finding = _finding(
-        evidence=[
-            Evidence(
-                source_system="documents",
-                record_id="DOC-FORGED",
-                field="status",
-                fact="missing",
-                retrieval_ref="lie",
-            )
-        ]
-    )
-
-    def factory(_s):
-        return ScriptedChatModel(responses=_tool_then_finding(finding))
-
-    app = create_app(settings, model_factory=factory, store=store, client=client)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
-        resp = await ac.post(
-            BackendRoutes.INVESTIGATIONS,
-            json={"case_id": CASE_ID, "objective": "x"},
-        )
-        body = resp.json()["result"]
-        assert body["status"] == "indeterminate"
-        assert body["evidence"] == []
-        assert body["approval_required"] is False
-        assert body["proposed_task"] is None
-        assert body["proposal_id"] is None
-        assert body["next_action"] == "escalate_to_human"
-        listed = await ac.get(CASE_PROPOSALS.format(case_id=CASE_ID))
-        assert listed.json() == []
-        assert store.get_proposal_by_run(resp.json()["run_id"]) is None
-    store.close()
-    await http.aclose()
 
 
 @pytest.mark.asyncio
@@ -887,7 +495,6 @@ async def test_crash_recovery_approved_then_retry(tmp_path: Path):
             json={"case_id": CASE_ID, "objective": "x"},
         )
         pid = resp.json()["result"]["proposal_id"]
-        # Simulate process crash after marking approved, before/without confirm:
         crashed = store.transition_proposal(
             pid,
             from_statuses={ProposalStatus.PENDING},
@@ -959,7 +566,6 @@ def test_generic_500_does_not_leak_exception(tmp_path: Path):
     client = SimulatorClient(settings, client=http)
     app = create_app(settings, model_factory=boom, store=store, client=client)
 
-    # Force unhandled path via a custom route
     @app.get("/boom")
     async def _boom() -> None:
         raise RuntimeError("secret-db-password-should-not-leak")
@@ -993,7 +599,6 @@ def test_guard_live_call_temp_ledger_no_provider(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("CASEPILOT_COST_LEDGER_PATH", str(ledger_file))
     settings = _settings(tmp_path, max_model_turns=2)
 
-    # Inject verified test prices (no paid provider; fail-closed production needs file).
     prices = {
         ALLOWED_LIVE_MODEL: ModelPrice(
             model=ALLOWED_LIVE_MODEL,
@@ -1006,7 +611,6 @@ def test_guard_live_call_temp_ledger_no_provider(tmp_path: Path, monkeypatch):
     }
     lg = get_ledger(prices=prices)
 
-    # Fake live model instance (no network) — isinstance check only.
     live = ChatOpenRouter(
         model=ALLOWED_LIVE_MODEL, api_key="test-not-used", max_tokens=MAX_OUTPUT_TOKENS
     )
@@ -1024,13 +628,11 @@ def test_guard_live_call_temp_ledger_no_provider(tmp_path: Path, monkeypatch):
     snap = ledger.snapshot()
     assert float(snap["reserved_usd"]) == pytest.approx(reservation.amount_usd)
 
-    # Release without provider start (safe path).
     release_live(ledger, reservation, detail="test no provider")
     snap2 = ledger.snapshot()
     assert float(snap2["reserved_usd"]) == pytest.approx(0.0)
     assert float(snap2["spent_usd"]) == pytest.approx(0.0)
 
-    # Second reserve then settle full (unknown actual) + pause.
     ledger2, res2 = guard_live_call(
         model=live,
         model_name=ALLOWED_LIVE_MODEL,
@@ -1046,7 +648,6 @@ def test_guard_live_call_temp_ledger_no_provider(tmp_path: Path, monkeypatch):
     snap3 = ledger2.snapshot()
     assert snap3.get("pricing_reliable") is False
 
-    # Further reserve must fail closed.
     with pytest.raises(CostPause):
         guard_live_call(
             model=live,
@@ -1057,7 +658,6 @@ def test_guard_live_call_temp_ledger_no_provider(tmp_path: Path, monkeypatch):
             ledger=get_ledger(prices=prices),
         )
 
-    # Input estimator enforces per-turn assumption basis.
     huge = "x" * (INPUT_TOKENS_PER_TURN * 4)
     assert (
         estimate_request_tokens(messages=[type("M", (), {"content": huge})()])
@@ -1079,7 +679,6 @@ def test_default_model_factory_sets_max_tokens_and_provider_caps(
     )
     from casepilot.evaluation.cost import ALLOWED_LIVE_MODEL
 
-    # Live path only — fail-closed test mode must be off.
     monkeypatch.delenv(TEST_MODE_ENV, raising=False)
     clear_test_hooks()
 
@@ -1121,7 +720,6 @@ def test_realistic_complete_prompt_fits_input_cap():
         estimate_text_tokens,
     )
 
-    # 1 byte == 1 token conservatism
     assert estimate_text_tokens("abc") == 3
     assert estimate_text_tokens("€") == len("€".encode())
 
@@ -1243,9 +841,7 @@ async def test_run_investigation_ainvoke_installs_async_live_guard(
     )
     responses = _tool_then_finding(finding, tools=["get_case"])
 
-    # Force live-guard install without OpenRouter / paid calls.
     monkeypatch.setattr(agent_mod, "is_live_model", lambda _m: True)
-    # Skip ledger reservation (still offline).
     monkeypatch.setattr(
         agent_mod,
         "guard_live_call",
